@@ -274,6 +274,12 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_TURN_TIMEOUT", hide = true)]
     pub turn_timeout: Option<u64>,
 
+    /// Display name to publish in the relay's kind:10100 agent directory so
+    /// desktop clients list this headless agent alongside managed ones. When
+    /// unset, no directory entry is published (pre-fork behavior).
+    #[arg(long, env = "BUZZ_ACP_AGENT_NAME")]
+    pub agent_name: Option<String>,
+
     #[arg(
         long,
         env = "BUZZ_ACP_SYSTEM_PROMPT",
@@ -521,6 +527,8 @@ pub struct Config {
     pub max_turns_per_session: u32,
     pub presence_enabled: bool,
     pub typing_enabled: bool,
+    /// Optional display name for the kind:10100 relay agent directory.
+    pub agent_name: Option<String>,
     /// Whether NIP-AE agent core memory injection is enabled. When false,
     /// the harness skips the per-session core engram fetch and renders no
     /// `[Agent Memory — core]` section. On by default; disabled via the
@@ -1085,6 +1093,7 @@ impl Config {
             max_turns_per_session: args.max_turns_per_session,
             presence_enabled: !args.no_presence,
             typing_enabled: !args.no_typing,
+            agent_name: args.agent_name,
             memory_enabled: args.memory && !args.no_memory,
             model,
             session_title: args
@@ -1458,6 +1467,7 @@ mod tests {
             max_turns_per_session: 0,
             presence_enabled: true,
             typing_enabled: true,
+            agent_name: None,
             memory_enabled: true,
             model: None,
             session_title: None,

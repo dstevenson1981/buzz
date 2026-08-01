@@ -90,6 +90,35 @@ async fn publish_presence(
     Ok(())
 }
 
+/// Publish a kind:10100 agent-directory entry so desktop clients list this
+/// headless agent alongside desktop-managed ones (Agents page, mention
+/// eligibility, Pulse). The kind is replaceable, so each startup refreshes
+/// the same entry. Content mirrors the lenient schema the desktop's
+/// `agents_from_events` parser expects; the event author is authoritative
+/// for the pubkey, so content only carries display fields.
+async fn publish_agent_directory(
+    publisher: &relay::RelayEventPublisher,
+    keys: &nostr::Keys,
+    name: &str,
+    agent_command: &str,
+) -> Result<(), relay::RelayError> {
+    use buzz_core::kind::KIND_AGENT_PROFILE;
+    use nostr::{EventBuilder, Kind};
+
+    let content = serde_json::json!({
+        "name": name,
+        "agent_type": agent_command,
+        "status": "online",
+    })
+    .to_string();
+    let event = EventBuilder::new(Kind::Custom(KIND_AGENT_PROFILE as u16), content)
+        .tags([])
+        .sign_with_keys(keys)
+        .map_err(|e| relay::RelayError::Http(format!("agent directory sign error: {e}")))?;
+    publisher.publish_event(event).await?;
+    Ok(())
+}
+
 fn emit_runtime_lifecycle(
     observer: Option<&observer::ObserverHandle>,
     start_nonce: &str,
@@ -1510,6 +1539,20 @@ async fn tokio_main() -> Result<()> {
         match publish_presence(&presence_publisher, &presence_keys, "online").await {
             Ok(_) => tracing::info!("presence set to online"),
             Err(e) => tracing::warn!("failed to set initial presence: {e}"),
+        }
+    }
+
+    if let Some(agent_name) = config.agent_name.as_deref() {
+        match publish_agent_directory(
+            &presence_publisher,
+            &presence_keys,
+            agent_name,
+            &config.agent_command,
+        )
+        .await
+        {
+            Ok(_) => tracing::info!("published kind:10100 agent directory entry as {agent_name}"),
+            Err(e) => tracing::warn!("failed to publish agent directory entry: {e}"),
         }
     }
 

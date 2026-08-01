@@ -19,6 +19,7 @@ import { TeamShareDialog } from "./TeamShareDialog";
 import { SecretRevealDialog } from "./SecretRevealDialog";
 import { TeamDeleteDialog } from "./TeamDeleteDialog";
 import { TeamDialog } from "./TeamDialog";
+import { RelayAgentsSection } from "./RelayAgentsSection";
 import { TeamsSection } from "./TeamsSection";
 import {
   AGENT_CARD_GRID_COLUMNS_CLASS,
@@ -207,6 +208,13 @@ export function AgentsView() {
               onImportSnapshotFile={(fileBytes, fileName) => {
                 void personas.handleImportSnapshotFile(fileBytes, fileName);
               }}
+            />
+
+            <RelayAgentsSection
+              relayAgents={agents.relayAgentsQuery.data ?? []}
+              isLoading={agents.relayAgentsQuery.isLoading}
+              managedPubkeys={agents.managedPubkeys}
+              onOpenProfile={(pubkey) => openProfilePanel?.(pubkey)}
             />
 
             <TeamsSection
