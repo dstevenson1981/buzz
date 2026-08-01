@@ -21,7 +21,9 @@ x-agent: &agent
   # domain, drop this and use BUZZ_RELAY_URL=wss://<domain> instead.
   network_mode: "container:buzz-prod-relay-1"
   environment: &agent-env
-    BUZZ_RELAY_URL: ws://localhost:3000
+    # Authority must byte-match the seeded community host — the desktop app's
+    # managed-agent runner dials 127.0.0.1, so that's the canonical name.
+    BUZZ_RELAY_URL: ws://127.0.0.1:3000
     BUZZ_ACP_AGENT_COMMAND: claude-agent-acp
     # Members-only relay, so "anyone" = Deadra + the other agents. This is what
     # lets agents answer each other, not just the owner.
