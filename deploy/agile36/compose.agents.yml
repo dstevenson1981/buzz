@@ -1,0 +1,69 @@
+# Agile36 team — one buzz-acp + Claude Code container per role.
+# Runs alongside the official relay stack (deploy/compose), joining its network.
+#
+#   Build:  docker compose -f compose.agents.yml build
+#   Start:  docker compose -f compose.agents.yml up -d
+#
+# Requires the relay stack to be up first (see ../compose) and a .env in this
+# directory (see .env.example / setup.sh).
+
+name: agile36-team
+
+x-agent: &agent
+  build:
+    context: ../..
+    dockerfile: deploy/agile36/Dockerfile.agents
+  image: agile36/buzz-agent:latest
+  environment: &agent-env
+    BUZZ_RELAY_URL: ws://relay:3000
+    BUZZ_ACP_AGENT_COMMAND: claude-agent-acp
+    # Members-only relay, so "anyone" = Deadra + the other agents. This is what
+    # lets agents answer each other, not just the owner.
+    BUZZ_ACP_RESPOND_TO: anyone
+    CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:?run 'claude setup-token' and put the token in .env}
+  volumes:
+    - ./personas:/personas:ro
+  restart: unless-stopped
+  networks:
+    - buzz-net
+
+services:
+  chief-of-staff:
+    <<: *agent
+    environment:
+      <<: *agent-env
+      BUZZ_PRIVATE_KEY: ${KEY_CHIEF_OF_STAFF:?}
+      BUZZ_ACP_SYSTEM_PROMPT_FILE: /personas/chief-of-staff.md
+
+  sales:
+    <<: *agent
+    environment:
+      <<: *agent-env
+      BUZZ_PRIVATE_KEY: ${KEY_SALES:?}
+      BUZZ_ACP_SYSTEM_PROMPT_FILE: /personas/sales.md
+
+  developer:
+    <<: *agent
+    environment:
+      <<: *agent-env
+      BUZZ_PRIVATE_KEY: ${KEY_DEVELOPER:?}
+      BUZZ_ACP_SYSTEM_PROMPT_FILE: /personas/developer.md
+
+  tester:
+    <<: *agent
+    environment:
+      <<: *agent-env
+      BUZZ_PRIVATE_KEY: ${KEY_TESTER:?}
+      BUZZ_ACP_SYSTEM_PROMPT_FILE: /personas/tester.md
+
+  social:
+    <<: *agent
+    environment:
+      <<: *agent-env
+      BUZZ_PRIVATE_KEY: ${KEY_SOCIAL:?}
+      BUZZ_ACP_SYSTEM_PROMPT_FILE: /personas/social.md
+
+networks:
+  buzz-net:
+    external: true
+    name: buzz-prod_buzz-net
