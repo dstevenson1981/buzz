@@ -44,9 +44,14 @@ jobs:
         working-directory: desktop
         run: pnpm tauri build --features mesh-llm --target ${{ env.TARGET }}
 
-      - name: Upload DMG
+      - name: Locate bundle output
+        run: find . -path ./node_modules -prune -o -name "*.dmg" -print -o -name "*.app" -maxdepth 6 -print | head -20
+
+      - name: Upload app bundle
         uses: actions/upload-artifact@v4
         with:
-          name: Buzz-agile36-arm64-dmg
-          path: target/${{ env.TARGET }}/release/bundle/dmg/*.dmg
+          name: Buzz-agile36-arm64
+          path: |
+            **/release/bundle/dmg/*.dmg
+            **/release/bundle/macos/*.app.tar.gz
           if-no-files-found: error
