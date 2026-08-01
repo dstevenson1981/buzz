@@ -1,0 +1,5 @@
+Owner keypair for the Buzz desktop/mobile app:
+Public key:  973928f9ccb95adf6171acbb348378cf5dedb68ae546184b834656b25ee7c469
+Secret key:  61a823cef86b45f5df38ac0069d8a0a4003f61bc13a3d6f005a4f43e514b86f7
+
+Set BUZZ_PRIVATE_KEY to the secret key to use this identity.

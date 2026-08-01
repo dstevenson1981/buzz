@@ -12,22 +12,29 @@ COMPOSE_DIR="$AGILE36_DIR/../compose"
 IMAGE=agile36/buzz-agent:latest
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
-keygen() { docker run --rm "$IMAGE" buzz-admin generate-key; }
-pub_of() { awk '/[Pp]ublic/ {print $NF}' <<<"$1"; }
-sec_of() { awk '/[Ss]ecret|[Pp]rivate/ {print $NF}' <<<"$1"; }
+# The image's entrypoint is buzz-acp, so admin commands must override it.
+keygen() { docker run --rm --entrypoint buzz-admin "$IMAGE" generate-key; }
+# generate-key output: "Public key:  <hex>" / "Secret key:  <hex>" plus a help
+# sentence that must NOT match — anchor to the exact labels.
+pub_of() { awk '/^Public key:/ {print $NF}' <<<"$1"; }
+sec_of() { awk '/^Secret key:/ {print $NF}' <<<"$1"; }
 
 [ -f "$AGILE36_DIR/.env" ] && { echo "deploy/agile36/.env already exists — remove it to re-run setup."; exit 1; }
 [ -f "$COMPOSE_DIR/.env" ] && { echo "deploy/compose/.env already exists — remove it to re-run setup."; exit 1; }
 
 step "Building the agent image (first build compiles Rust — takes a while)"
-docker compose -f "$AGILE36_DIR/compose.agents.yml" build
+# Plain docker build: compose would interpolate the whole file and demand
+# .env values that don't exist until later in this script.
+docker build -f "$AGILE36_DIR/Dockerfile.agents" -t "$IMAGE" "$AGILE36_DIR/../.."
 
 step "Generating identities"
 OWNER=$(keygen);  echo "  owner (Deadra)"
 RELAY=$(keygen);  echo "  relay signing key"
-declare -A KEYS
-for role in chief-of-staff sales developer tester social; do
-  KEYS[$role]=$(keygen); echo "  $role"
+# Parallel indexed arrays — macOS bash 3.2 has no associative arrays.
+ROLES=(chief-of-staff sales developer tester social)
+KEYS=()
+for role in "${ROLES[@]}"; do
+  KEYS+=("$(keygen)"); echo "  $role"
 done
 
 step "Writing deploy/compose/.env (relay stack)"
@@ -65,9 +72,9 @@ step "Writing deploy/agile36/.env (team)"
 {
   echo "# Run 'claude setup-token' on the host and paste the token here:"
   echo "CLAUDE_CODE_OAUTH_TOKEN="
-  for role in chief-of-staff sales developer tester social; do
-    var="KEY_$(tr 'a-z-' 'A-Z_' <<<"$role")"
-    echo "$var=$(sec_of "${KEYS[$role]}")"
+  for i in "${!ROLES[@]}"; do
+    var="KEY_$(tr 'a-z-' 'A-Z_' <<<"${ROLES[$i]}")"
+    echo "$var=$(sec_of "${KEYS[$i]}")"
   done
 } > "$AGILE36_DIR/.env"
 
@@ -83,15 +90,15 @@ source "$COMPOSE_DIR/.env"
 # add-member writes straight to Postgres/Redis, then publishes the updated
 # membership list signed with the relay key.
 register() {
-  docker run --rm --network buzz-prod_buzz-net \
+  docker run --rm --network buzz-prod_buzz-net --entrypoint buzz-admin \
     -e DATABASE_URL="postgres://$POSTGRES_USER:$POSTGRES_PASSWORD@postgres:5432/$POSTGRES_DB" \
     -e REDIS_URL="redis://:$REDIS_PASSWORD@redis:6379" \
     -e BUZZ_RELAY_PRIVATE_KEY="$BUZZ_RELAY_PRIVATE_KEY" \
-    "$IMAGE" buzz-admin add-member --pubkey "$1"
+    "$IMAGE" add-member --pubkey "$1"
 }
 register "$(pub_of "$OWNER")"
-for role in chief-of-staff sales developer tester social; do
-  register "$(pub_of "${KEYS[$role]}")"
+for i in "${!ROLES[@]}"; do
+  register "$(pub_of "${KEYS[$i]}")"
 done
 
 step "Done. Next steps"
