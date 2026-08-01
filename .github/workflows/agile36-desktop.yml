@@ -1,0 +1,52 @@
+# Builds the Agile36 fork's macOS desktop app on GitHub's runners — the local
+# machine doesn't have the ~20GB of scratch space a Tauri release build needs.
+# Produces an unsigned arm64 DMG as a workflow artifact (right-click → Open on
+# first launch). Trigger manually from the Actions tab or `gh workflow run`.
+name: Agile36 desktop build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-macos-arm64:
+    runs-on: macos-14
+    timeout-minutes: 90
+    env:
+      TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable pnpm via corepack
+        run: corepack enable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build sidecar binaries (release)
+        run: cargo build --release -p buzz-acp -p buzz-agent -p buzz-dev-mcp -p buzz-cli -p git-credential-nostr
+
+      - name: Stage sidecars where Tauri expects them
+        run: |
+          mkdir -p desktop/src-tauri/binaries
+          for bin in buzz-acp buzz-agent buzz-dev-mcp git-credential-nostr buzz; do
+            cp "target/release/${bin}" "desktop/src-tauri/binaries/${bin}-${TARGET}"
+            chmod +x "desktop/src-tauri/binaries/${bin}-${TARGET}"
+          done
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build desktop app
+        working-directory: desktop
+        run: pnpm tauri build --features mesh-llm --target ${{ env.TARGET }}
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: Buzz-agile36-arm64-dmg
+          path: target/${{ env.TARGET }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
