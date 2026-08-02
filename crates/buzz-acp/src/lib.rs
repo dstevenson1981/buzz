@@ -109,6 +109,10 @@ async fn publish_agent_directory(
         "name": name,
         "agent_type": agent_command,
         "status": "online",
+        // Required by the relay's kind:10100 side effect (newer relays hard-
+        // fail ingest without it). "anyone" matches this deployment's flat
+        // team: any member may add these agents to channels.
+        "channel_add_policy": "anyone",
     })
     .to_string();
     let event = EventBuilder::new(Kind::Custom(KIND_AGENT_PROFILE as u16), content)
