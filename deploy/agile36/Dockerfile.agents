@@ -19,7 +19,8 @@ RUN apt-get update \
 
 # Claude Code + its ACP adapter. The adapter speaks ACP over stdio to buzz-acp
 # and runs the Claude Agent SDK underneath.
-RUN npm install -g @anthropic-ai/claude-code @agentclientprotocol/claude-agent-acp
+RUN npm install -g @anthropic-ai/claude-code @agentclientprotocol/claude-agent-acp \
+    @openai/codex @agentclientprotocol/codex-acp
 
 COPY --from=builder /src/target/release/buzz-acp /usr/local/bin/
 COPY --from=builder /src/target/release/buzz-admin /usr/local/bin/
