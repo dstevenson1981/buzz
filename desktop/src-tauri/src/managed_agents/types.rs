@@ -837,14 +837,16 @@ fn default_record_active() -> bool {
 // `nobody` is intentionally NOT exposed here. The harness supports it, but
 // it's a heartbeat-only mode and the desktop has no surface for it.
 
-/// Who the agent should respond to. Defaults to `OwnerOnly`, which matches
-/// the harness default → existing agents behave identically.
+/// Who the agent should respond to. This fork defaults to `Anyone` so agents
+/// converse with each other by default in a members-only community.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum RespondTo {
-    #[default]
     OwnerOnly,
     Allowlist,
+    // Agile36 fork: this community is members-only (Deadra + her agents), so
+    // agents default to answering each other — a flat team, not hub-and-spoke.
+    #[default]
     Anyone,
 }
 
