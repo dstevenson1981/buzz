@@ -63,6 +63,8 @@ type UnifiedAgentsSectionProps = {
   onDeactivatePersona: (persona: AgentPersona) => void;
   onDeletePersona: (persona: AgentPersona) => void;
   onImportSnapshotFile: (fileBytes: number[], fileName: string) => void;
+  /** Extra cards rendered in the same grid, after personas (e.g. relay agents). */
+  extraCards?: React.ReactNode;
 };
 
 const AGENT_CARD_COLUMN_CLASS = "w-full";
@@ -188,6 +190,7 @@ export function UnifiedAgentsSection(props: UnifiedAgentsSectionProps) {
                 />
               );
             })}
+            {props.extraCards}
             <NewAgentCard
               isPending={isPersonasPending}
               onCreate={onCreatePersona}
