@@ -25,41 +25,11 @@ const HONEY_SYSTEM_PROMPT: &str = "You are Honey, a warm and thoughtful communic
 
 const BUMBLE_SYSTEM_PROMPT: &str = "You are Bumble, a curious and adventurous researcher. Explore questions, compare options, check assumptions, and explain what you find clearly. Be candid when uncertain and favor useful evidence. Add occasional bee wordplay or 🐝🔎—keep it playful, never chaotic.";
 
-const BUILT_IN_PERSONAS: &[BuiltInPersona] = &[
-    BuiltInPersona {
-        id: "builtin:fizz",
-        display_name: "Fizz",
-        avatar_url: Some(FIZZ_AVATAR),
-        system_prompt: FIZZ_SYSTEM_PROMPT,
-        name_pool: &[
-            "Nectar", "Comet", "Bramble", "Clover", "Pollen", "Amber", "Daisy", "Mason", "Thistle",
-            "Waxwing", "Hive", "Meadow", "Juniper", "Aster", "Sage", "Willow", "Orchard", "Buzz",
-        ],
-        model: None,
-        runtime: None,
-        default_active: true,
-    },
-    BuiltInPersona {
-        id: "builtin:honey",
-        display_name: "Honey",
-        avatar_url: Some(HONEY_AVATAR),
-        system_prompt: HONEY_SYSTEM_PROMPT,
-        name_pool: &["Honey"],
-        model: None,
-        runtime: None,
-        default_active: true,
-    },
-    BuiltInPersona {
-        id: "builtin:bumble",
-        display_name: "Bumble",
-        avatar_url: Some(BUMBLE_AVATAR),
-        system_prompt: BUMBLE_SYSTEM_PROMPT,
-        name_pool: &["Bumble"],
-        model: None,
-        runtime: None,
-        default_active: true,
-    },
-];
+// Agile36 fork: the starter trio is retired (see RETIRED_PERSONAS below).
+// This deployment's roster is the always-on relay team, so seeding
+// app-managed demo agents on every launch just resurrects agents the
+// owner has deleted.
+const BUILT_IN_PERSONAS: &[BuiltInPersona] = &[];
 
 pub(crate) fn built_in_persona_avatar_url(id: &str) -> Option<&'static str> {
     BUILT_IN_PERSONAS
@@ -69,6 +39,9 @@ pub(crate) fn built_in_persona_avatar_url(id: &str) -> Option<&'static str> {
 }
 
 const RETIRED_PERSONAS: &[(&str, &str)] = &[
+    ("builtin:fizz", FIZZ_SYSTEM_PROMPT),
+    ("builtin:honey", HONEY_SYSTEM_PROMPT),
+    ("builtin:bumble", BUMBLE_SYSTEM_PROMPT),
     (
         "builtin:solo",
         "",
