@@ -54,13 +54,16 @@ export function getMentionableAgentPubkeys({
   return pubkeys;
 }
 
-export function isAgentIdentityInManagedList(
+export function isAgentIdentityKnown(
   candidate: { isAgent?: boolean; pubkey: string },
   managedAgentPubkeys: ReadonlySet<string>,
+  directoryAgentPubkeys: ReadonlySet<string>,
 ) {
+  const normalized = normalizePubkey(candidate.pubkey);
   return (
     candidate.isAgent !== true ||
-    managedAgentPubkeys.has(normalizePubkey(candidate.pubkey))
+    managedAgentPubkeys.has(normalized) ||
+    directoryAgentPubkeys.has(normalized)
   );
 }
 
