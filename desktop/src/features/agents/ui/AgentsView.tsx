@@ -20,6 +20,7 @@ import { SecretRevealDialog } from "./SecretRevealDialog";
 import { TeamDeleteDialog } from "./TeamDeleteDialog";
 import { TeamDialog } from "./TeamDialog";
 import { RelayAgentsSection } from "./RelayAgentsSection";
+import { RelayAgentEditDialog } from "./RelayAgentEditDialog";
 import { TeamsSection } from "./TeamsSection";
 import {
   AGENT_CARD_GRID_COLUMNS_CLASS,
@@ -35,6 +36,7 @@ import { useGlobalAgentConfig } from "@/features/agents/useGlobalAgentConfig";
 import { Button } from "@/shared/ui/button";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { getInheritedAgentDefaults } from "./bakedEnvHelpers";
+import type { RelayAgent } from "@/shared/api/types";
 
 export function AgentsView() {
   const { openPersonaProfilePanel, openProfilePanel } = useProfilePanel();
@@ -49,6 +51,8 @@ export function AgentsView() {
   // Exclusivity: create never sets `personaDialogState` (edit/dup/import do),
   // so the create-mode and definition-edit AgentDialog mounts never coexist.
   const [isCreateDialogOpen, setIsCreateDialogOpen] = React.useState(false);
+  const [relayAgentToEdit, setRelayAgentToEdit] =
+    React.useState<RelayAgent | null>(null);
 
   function openUnifiedCreate() {
     personas.prepareCreate();
@@ -214,6 +218,7 @@ export function AgentsView() {
               relayAgents={agents.relayAgentsQuery.data ?? []}
               isLoading={agents.relayAgentsQuery.isLoading}
               managedPubkeys={agents.managedPubkeys}
+              onEdit={setRelayAgentToEdit}
               onOpenProfile={(pubkey) => openProfilePanel?.(pubkey)}
             />
 
@@ -249,6 +254,17 @@ export function AgentsView() {
         onOpenChange={setIsAiDefaultsOpen}
         open={isAiDefaultsOpen}
         returnFocusRef={aiDefaultsTriggerRef}
+      />
+
+      <RelayAgentEditDialog
+        agent={relayAgentToEdit}
+        onOpenChange={(open) => {
+          if (!open) setRelayAgentToEdit(null);
+        }}
+        onSaved={() => {
+          window.setTimeout(() => agents.refetchRelayAgents(), 1_500);
+        }}
+        open={relayAgentToEdit !== null}
       />
 
       {isCreateDialogOpen ? (

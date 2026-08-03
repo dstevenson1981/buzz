@@ -9,6 +9,7 @@ mod pool;
 mod pool_lifecycle;
 mod queue;
 mod relay;
+mod remote_config;
 mod setup_mode;
 mod usage;
 
@@ -104,6 +105,8 @@ async fn publish_agent_directory(
     respond_to: &str,
     channel_ids: &[String],
     owner_pubkey: Option<&str>,
+    allowed_runtimes: &[String],
+    remote_configuration_enabled: bool,
 ) -> Result<(), relay::RelayError> {
     use buzz_core::kind::KIND_AGENT_PROFILE;
     use nostr::{EventBuilder, Kind};
@@ -121,6 +124,12 @@ async fn publish_agent_directory(
         // channel list — entries without them are invisible to @-mentions.
         "respond_to": respond_to,
         "channel_ids": channel_ids,
+        "capabilities": if remote_configuration_enabled {
+            serde_json::json!(["remote-config-v1"])
+        } else {
+            serde_json::json!([])
+        },
+        "allowed_runtimes": allowed_runtimes,
     });
     if let Some(owner) = owner_pubkey {
         content_obj["owner_pubkey"] = serde_json::json!(owner);
@@ -159,6 +168,8 @@ async fn publish_configured_agent_directory(
         &respond_to_directory,
         &subscribed_channel_id_strings,
         config.agent_owner.as_deref(),
+        &config.allowed_runtimes,
+        config.relay_observer && config.agent_owner.is_some(),
     )
     .await
 }
@@ -907,17 +918,23 @@ async fn publish_relay_observer_event(
 /// Maximum age (seconds) for an observer control frame to be considered fresh.
 const OBSERVER_CONTROL_FRESHNESS_SECS: i64 = 300;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ObserverControlAction {
+    Continue,
+    Restart,
+}
+
 fn handle_relay_observer_control_event(
-    keys: &nostr::Keys,
+    config: &Config,
     event: nostr::Event,
     pool: &mut AgentPool,
     observer: Option<&observer::ObserverHandle>,
     owner_pubkey_hex: &str,
-) {
+) -> ObserverControlAction {
     // Defense-in-depth: verify signature even though the relay already checked.
     if let Err(e) = buzz_core::verify_event(&event) {
         tracing::warn!(error = %e, "observer control frame failed signature verification");
-        return;
+        return ObserverControlAction::Continue;
     }
 
     // Defense-in-depth: verify the sender is the resolved owner.
@@ -927,7 +944,7 @@ fn handle_relay_observer_control_event(
             expected = %owner_pubkey_hex,
             "observer control frame from non-owner — dropping"
         );
-        return;
+        return ObserverControlAction::Continue;
     }
 
     // Freshness: reject stale/replayed frames outside ±5 minute window.
@@ -939,14 +956,14 @@ fn handle_relay_observer_control_event(
             now,
             "observer control frame outside freshness window — dropping"
         );
-        return;
+        return ObserverControlAction::Continue;
     }
 
-    let payload = match decrypt_observer_payload::<serde_json::Value>(keys, &event) {
+    let payload = match decrypt_observer_payload::<serde_json::Value>(&config.keys, &event) {
         Ok(payload) => payload,
         Err(error) => {
             tracing::warn!("failed to decrypt observer control frame: {error}");
-            return;
+            return ObserverControlAction::Continue;
         }
     };
 
@@ -954,14 +971,177 @@ fn handle_relay_observer_control_event(
     match command_type {
         Some("cancel_turn") => {
             handle_cancel_turn_control(&payload, pool, observer);
+            ObserverControlAction::Continue
         }
         Some("switch_model") => {
             handle_switch_model_control(&payload, pool, observer);
+            ObserverControlAction::Continue
+        }
+        Some("get_configuration") => {
+            handle_get_configuration_control(&payload, config, observer);
+            ObserverControlAction::Continue
+        }
+        Some("update_configuration") => {
+            handle_update_configuration_control(&payload, config, observer)
         }
         _ => {
             tracing::debug!(payload = %payload, "ignoring unknown observer control frame");
+            ObserverControlAction::Continue
         }
     }
+}
+
+fn observer_request_id(payload: &serde_json::Value) -> Option<&str> {
+    payload
+        .get("requestId")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.len() <= 128)
+}
+
+fn emit_configuration_result(
+    observer: Option<&observer::ObserverHandle>,
+    payload: serde_json::Value,
+) {
+    if let Some(observer) = observer {
+        observer.emit(
+            "control_result",
+            None,
+            &observer::ObserverContext::default(),
+            payload,
+        );
+    }
+}
+
+fn current_remote_configuration(config: &Config) -> serde_json::Value {
+    serde_json::json!({
+        "runtime": config.agent_command,
+        "systemPrompt": config.system_prompt.as_deref().unwrap_or(""),
+        "model": config.model,
+        "allowedRuntimes": config.allowed_runtimes,
+    })
+}
+
+fn handle_get_configuration_control(
+    payload: &serde_json::Value,
+    config: &Config,
+    observer: Option<&observer::ObserverHandle>,
+) {
+    let Some(request_id) = observer_request_id(payload) else {
+        tracing::warn!("observer get_configuration frame missing valid requestId");
+        return;
+    };
+    emit_configuration_result(
+        observer,
+        serde_json::json!({
+            "type": "get_configuration",
+            "status": "ok",
+            "requestId": request_id,
+            "configuration": current_remote_configuration(config),
+        }),
+    );
+}
+
+fn handle_update_configuration_control(
+    payload: &serde_json::Value,
+    config: &Config,
+    observer: Option<&observer::ObserverHandle>,
+) -> ObserverControlAction {
+    let Some(request_id) = observer_request_id(payload) else {
+        tracing::warn!("observer update_configuration frame missing valid requestId");
+        return ObserverControlAction::Continue;
+    };
+
+    let requested = (|| -> Result<remote_config::RemoteAgentConfig, String> {
+        let runtime = payload
+            .get("runtime")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Choose an available runtime.".to_string())?;
+        let system_prompt = payload
+            .get("systemPrompt")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "Agent instructions must be text.".to_string())?;
+        let model = match payload.get("model") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(value)) => {
+                let trimmed = value.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            }
+            Some(_) => return Err("Model must be text or empty.".to_string()),
+        };
+        let requested = remote_config::RemoteAgentConfig {
+            version: remote_config::REMOTE_CONFIG_VERSION,
+            runtime: runtime.to_string(),
+            system_prompt: system_prompt.to_string(),
+            model,
+        };
+        requested.validate(&config.allowed_runtimes)?;
+        Ok(requested)
+    })();
+
+    let requested = match requested {
+        Ok(requested) => requested,
+        Err(error) => {
+            emit_configuration_result(
+                observer,
+                serde_json::json!({
+                    "type": "update_configuration",
+                    "status": "rejected",
+                    "requestId": request_id,
+                    "error": error,
+                }),
+            );
+            return ObserverControlAction::Continue;
+        }
+    };
+
+    let unchanged = requested.runtime == config.agent_command
+        && requested.system_prompt == config.system_prompt.as_deref().unwrap_or("")
+        && requested.model == config.model;
+    if unchanged {
+        emit_configuration_result(
+            observer,
+            serde_json::json!({
+                "type": "update_configuration",
+                "status": "unchanged",
+                "requestId": request_id,
+                "configuration": current_remote_configuration(config),
+            }),
+        );
+        return ObserverControlAction::Continue;
+    }
+
+    if let Err(error) = remote_config::save_remote_config(&config.remote_config_path, &requested) {
+        emit_configuration_result(
+            observer,
+            serde_json::json!({
+                "type": "update_configuration",
+                "status": "rejected",
+                "requestId": request_id,
+                "error": error,
+            }),
+        );
+        return ObserverControlAction::Continue;
+    }
+
+    emit_configuration_result(
+        observer,
+        serde_json::json!({
+            "type": "update_configuration",
+            "status": "accepted",
+            "requestId": request_id,
+            "restartRequired": true,
+            "configuration": {
+                "runtime": requested.runtime,
+                "systemPrompt": requested.system_prompt,
+                "model": requested.model,
+                "allowedRuntimes": config.allowed_runtimes,
+            },
+        }),
+    );
+    ObserverControlAction::Restart
 }
 
 /// Handle a `cancel_turn` control frame: signal the in-flight task to cancel.
@@ -1437,6 +1617,9 @@ async fn tokio_main() -> Result<()> {
 
     // Priority: BUZZ_AUTH_TAG (NIP-OA attestation) → --agent-owner flag.
     let startup_owner: Option<String> = resolve_agent_owner(&config);
+    if let Some(owner) = startup_owner.as_ref() {
+        config.agent_owner = Some(owner.clone());
+    }
     if let Some(ref owner) = startup_owner {
         tracing::info!("agent owner: {owner}");
     } else {
@@ -1975,7 +2158,22 @@ async fn tokio_main() -> Result<()> {
                     match control_event {
                         Some(event) => {
                             if let Some(ref owner_hex) = owner_cache.pubkey {
-                                handle_relay_observer_control_event(&config.keys, event, &mut pool, observer.as_ref(), owner_hex);
+                                let action = handle_relay_observer_control_event(
+                                    &config,
+                                    event,
+                                    &mut pool,
+                                    observer.as_ref(),
+                                    owner_hex,
+                                );
+                                if action == ObserverControlAction::Restart {
+                                    tracing::info!(
+                                        "remote agent configuration updated — restarting harness"
+                                    );
+                                    // Give the observer publisher a brief chance to send the
+                                    // encrypted acknowledgement before shutdown begins.
+                                    tokio::time::sleep(Duration::from_secs(1)).await;
+                                    break;
+                                }
                             } else {
                                 tracing::warn!("observer control frame received but no owner resolved — dropping");
                             }
@@ -5095,6 +5293,7 @@ mod build_mcp_servers_tests {
             keys: nostr::Keys::generate(),
             relay_url: "ws://localhost:3000".into(),
             agent_command: "goose".into(),
+            allowed_runtimes: vec!["goose".into()],
             agent_name: None,
             agent_args: vec!["acp".into()],
             mcp_command: "test-mcp-server".into(),
@@ -5115,6 +5314,7 @@ mod build_mcp_servers_tests {
             channels_override: None,
             no_mention_filter: false,
             config_path: std::path::PathBuf::from("./buzz-acp.toml"),
+            remote_config_path: std::path::PathBuf::from("./.buzz/remote-agent-config.json"),
             context_message_limit: 12,
             max_turns_per_session: 0,
             presence_enabled: true,
@@ -5317,6 +5517,7 @@ mod error_outcome_emission_tests {
             // harmlessly off the JoinSet — irrelevant to the synchronous
             // feed emission under test.
             agent_command: "true".into(),
+            allowed_runtimes: vec!["true".into()],
             agent_name: None,
             agent_args: vec![],
             mcp_command: "test-mcp-server".into(),
@@ -5337,6 +5538,7 @@ mod error_outcome_emission_tests {
             channels_override: None,
             no_mention_filter: false,
             config_path: std::path::PathBuf::from("./buzz-acp.toml"),
+            remote_config_path: std::path::PathBuf::from("./.buzz/remote-agent-config.json"),
             context_message_limit: 12,
             max_turns_per_session: 0,
             presence_enabled: true,

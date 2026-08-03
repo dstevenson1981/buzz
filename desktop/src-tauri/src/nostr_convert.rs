@@ -922,10 +922,35 @@ mod tests {
         assert_eq!(parsed[0].pubkey, e.pubkey.to_hex());
         assert_eq!(parsed[0].name, "Scout");
         assert_eq!(parsed[0].agent_type, "agent");
+        assert_eq!(parsed[0].owner_pubkey, None);
         assert_eq!(parsed[0].channels, Vec::<String>::new());
         assert_eq!(parsed[0].capabilities, Vec::<String>::new());
+        assert_eq!(parsed[0].allowed_runtimes, Vec::<String>::new());
         assert_eq!(parsed[0].status, "offline");
         assert_eq!(parsed[0].respond_to, None);
+    }
+
+    #[test]
+    fn agents_preserves_remote_configuration_metadata() {
+        let owner = "b".repeat(64);
+        let e = ev(
+            10100,
+            &format!(
+                r#"{{"name":"Scout","owner_pubkey":"{owner}","capabilities":["remote-config-v1"],"allowed_runtimes":["claude-agent-acp","codex-acp"]}}"#
+            ),
+            vec![],
+        );
+        let v = agents_from_events(std::slice::from_ref(&e));
+        let agents = v.get("agents").cloned().unwrap();
+        let parsed: Vec<crate::managed_agents::RelayAgentInfo> =
+            serde_json::from_value(agents).unwrap();
+
+        assert_eq!(parsed[0].owner_pubkey.as_deref(), Some(owner.as_str()));
+        assert_eq!(parsed[0].capabilities, vec!["remote-config-v1"]);
+        assert_eq!(
+            parsed[0].allowed_runtimes,
+            vec!["claude-agent-acp", "codex-acp"]
+        );
     }
 
     #[test]

@@ -289,9 +289,11 @@ export type RelayAgent = {
   pubkey: string;
   name: string;
   agentType: string;
+  ownerPubkey: string | null;
   channels: string[];
   channelIds: string[];
   capabilities: string[];
+  allowedRuntimes: string[];
   status: "online" | "away" | "offline";
   respondTo: RespondToMode | null;
   respondToAllowlist: string[];
@@ -492,10 +494,25 @@ export type SwitchManagedAgentModelStatus =
   | "unsupported_model"
   | "no_active_turn";
 
+export type RelayAgentConfiguration = {
+  runtime: string;
+  systemPrompt: string;
+  model: string | null;
+  allowedRuntimes: string[];
+};
+
 export type ControlResultFrame = {
-  type: "cancel_turn" | "switch_model";
+  type:
+    | "cancel_turn"
+    | "switch_model"
+    | "get_configuration"
+    | "update_configuration";
   status: string;
   modelId?: string;
+  requestId?: string;
+  configuration?: RelayAgentConfiguration;
+  error?: string;
+  restartRequired?: boolean;
 };
 
 export type GitBashPrerequisite = {

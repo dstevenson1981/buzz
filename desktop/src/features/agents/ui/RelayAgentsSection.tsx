@@ -1,9 +1,11 @@
 import { useUsersBatchQuery } from "@/features/profile/hooks";
+import { useIdentityQuery } from "@/shared/api/hooks";
 import type { RelayAgent } from "@/shared/api/types";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { IdentityCardSkeleton } from "@/shared/ui/identity-card-skeleton";
 import { SectionHeader } from "@/shared/ui/PageHeader";
 import { AgentIdentityCard } from "./AgentIdentityCard";
+import { RelayAgentActionsMenu } from "./RelayAgentActionsMenu";
 import { AGENT_CARD_GRID_COLUMNS_CLASS } from "./UnifiedAgentsSection";
 
 const CARD_COLUMN_CLASS = "w-full";
@@ -15,20 +17,21 @@ type RelayAgentsSectionProps = {
   /** Desktop-managed pubkeys — already rendered above, so excluded here. */
   managedPubkeys: Set<string>;
   onOpenProfile: (pubkey: string) => void;
+  onEdit: (agent: RelayAgent) => void;
 };
 
 /**
- * Read-only cards for agents that live outside this desktop — headless
- * buzz-acp harnesses (e.g. Docker containers) that publish a kind:10100
- * directory entry. They can't be started or stopped from here; their runtime
- * belongs to wherever they're hosted. Clicking a card opens the profile
- * panel, which the surrounding AgentsScreen already renders.
+ * Cards for agents that live outside this desktop: headless buzz-acp harnesses
+ * (for example, Docker containers) that publish a kind:10100 directory entry.
+ * Owners can edit hosts that advertise remote configuration support; lifecycle
+ * remains controlled by the host. Clicking a card opens its profile panel.
  */
 export function RelayAgentsSection({
   relayAgents,
   isLoading,
   managedPubkeys,
   onOpenProfile,
+  onEdit,
 }: RelayAgentsSectionProps) {
   const externalAgents = relayAgents.filter(
     (agent) => !managedPubkeys.has(normalizePubkey(agent.pubkey)),
@@ -39,6 +42,8 @@ export function RelayAgentsSection({
     { enabled: externalAgents.length > 0 },
   );
   const profiles = profilesQuery.data?.profiles ?? {};
+  const identityQuery = useIdentityQuery();
+  const currentPubkey = identityQuery.data?.pubkey;
 
   if (!isLoading && externalAgents.length === 0) {
     return null;
@@ -49,7 +54,7 @@ export function RelayAgentsSection({
       <div className={CARD_COLUMN_CLASS}>
         <SectionHeader
           title="Relay agents"
-          description="Agents connected to your community from outside this app. Managed where they run."
+          description="Agents connected to your community from outside this app."
         />
       </div>
 
@@ -66,8 +71,20 @@ export function RelayAgentsSection({
             const profile = profiles[agent.pubkey.toLowerCase()];
             const label =
               profile?.displayName?.trim() || agent.name || agent.pubkey;
+            const ownerPubkey = profile?.ownerPubkey ?? agent.ownerPubkey;
+            const canConfigure =
+              Boolean(currentPubkey) &&
+              Boolean(ownerPubkey) &&
+              normalizePubkey(ownerPubkey ?? "") ===
+                normalizePubkey(currentPubkey ?? "") &&
+              agent.capabilities.includes("remote-config-v1");
             return (
               <AgentIdentityCard
+                actions={
+                  canConfigure ? (
+                    <RelayAgentActionsMenu agent={agent} onEdit={onEdit} />
+                  ) : null
+                }
                 key={agent.pubkey}
                 ariaLabel={`Open profile for ${label}`}
                 avatarUrl={profile?.avatarUrl ?? null}

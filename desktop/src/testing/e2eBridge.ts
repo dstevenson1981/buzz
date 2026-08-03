@@ -100,7 +100,9 @@ type MockRelayAgentSeed = {
   pubkey: string;
   name: string;
   agentType?: string;
+  ownerPubkey?: string | null;
   capabilities?: string[];
+  allowedRuntimes?: string[];
   respondTo?: RawRelayAgent["respond_to"];
   respondToAllowlist?: string[];
   channelNames?: string[];
@@ -720,9 +722,11 @@ type RawRelayAgent = {
   pubkey: string;
   name: string;
   agent_type: string;
+  owner_pubkey?: string | null;
   channels: string[];
   channel_ids: string[];
   capabilities: string[];
+  allowed_runtimes?: string[];
   status: PresenceStatus;
   respond_to?: "owner-only" | "allowlist" | "anyone";
   respond_to_allowlist?: string[];
@@ -1482,6 +1486,7 @@ function cloneRelayAgent(agent: RawRelayAgent): RawRelayAgent {
     channels: [...agent.channels],
     channel_ids: [...agent.channel_ids],
     capabilities: [...agent.capabilities],
+    allowed_runtimes: [...(agent.allowed_runtimes ?? [])],
   };
 }
 
@@ -2071,6 +2076,7 @@ function resetMockRelayAgents(config?: E2eConfig) {
     channels: [...agent.channels],
     channel_ids: [...agent.channel_ids],
     capabilities: [...agent.capabilities],
+    allowed_runtimes: [...(agent.allowed_runtimes ?? [])],
     respond_to_allowlist: [...(agent.respond_to_allowlist ?? [])],
   }));
 
@@ -2085,9 +2091,11 @@ function resetMockRelayAgents(config?: E2eConfig) {
       pubkey: seed.pubkey,
       name: seed.name,
       agent_type: seed.agentType ?? "goose",
+      owner_pubkey: seed.ownerPubkey ?? null,
       channels: channels.map((channel) => channel.name),
       channel_ids: channels.map((channel) => channel.id),
       capabilities: seed.capabilities ?? ["messages", "channels", "mcp"],
+      allowed_runtimes: seed.allowedRuntimes ?? [],
       status: seed.status ?? "online",
       respond_to: seed.respondTo ?? "owner-only",
       respond_to_allowlist: seed.respondToAllowlist ?? [],
@@ -3252,9 +3260,11 @@ function syncMockRelayAgentsFromManagedAgents() {
         pubkey: agent.pubkey,
         name: agent.name,
         agent_type: agent.agent_command,
+        owner_pubkey: MOCK_IDENTITY_PUBKEY,
         channels: memberships.channels,
         channel_ids: memberships.channelIds,
         capabilities: ["messages", "channels", "mcp"],
+        allowed_runtimes: [agent.agent_command],
         status:
           agent.status === "running" || agent.status === "deployed"
             ? "online"
@@ -9340,6 +9350,11 @@ function sendToMockSocket(args: {
       return;
     }
 
+    if (event.kind === KIND_AGENT_OBSERVER_FRAME) {
+      sendWsText(socket.handler, ["OK", event.id, true, ""]);
+      return;
+    }
+
     const channelId = getChannelIdFromTags(event.tags);
     if (!channelId) {
       sendWsText(socket.handler, [
@@ -11248,6 +11263,24 @@ export function maybeInstallE2eTauriMocks() {
             (payload as { createdAt?: number }).createdAt,
           ),
         );
+      case "build_observer_control_event": {
+        const input = payload as {
+          agentPubkey: string;
+          payload: unknown;
+        };
+        return JSON.stringify(
+          createMockEvent(
+            KIND_AGENT_OBSERVER_FRAME,
+            JSON.stringify(input.payload),
+            [
+              ["p", input.agentPubkey],
+              ["agent", input.agentPubkey],
+              ["frame", "control"],
+            ],
+            identity?.pubkey ?? DEFAULT_MOCK_IDENTITY.pubkey,
+          ),
+        );
+      }
       case "nip44_encrypt_to_self":
         return (payload as { plaintext: string }).plaintext;
       case "nip44_decrypt_from_self":

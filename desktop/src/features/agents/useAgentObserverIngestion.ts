@@ -93,10 +93,18 @@ export function useAgentObserverIngestion() {
 
   const ingestionAgents = React.useMemo(() => {
     const ownerByPubkey = new Map<string, string>();
+    for (const agent of relayAgentsQuery.data ?? []) {
+      if (agent.ownerPubkey) {
+        ownerByPubkey.set(
+          normalizePubkey(agent.pubkey),
+          normalizePubkey(agent.ownerPubkey),
+        );
+      }
+    }
     for (const [pubkey, summary] of Object.entries(profiles ?? {})) {
       if (summary.ownerPubkey) {
-        // Store both key and value normalized so lookups and ownership
-        // comparisons never depend on the casing the relay happened to send.
+        // A verified NIP-OA profile is authoritative when present; externally
+        // provisioned harnesses can fall back to their directory declaration.
         ownerByPubkey.set(
           normalizePubkey(pubkey),
           normalizePubkey(summary.ownerPubkey),
@@ -109,7 +117,13 @@ export function useAgentObserverIngestion() {
       ownerByPubkey,
       currentPubkey,
     );
-  }, [currentPubkey, managedAgents, profiles, relayAgentPubkeys]);
+  }, [
+    currentPubkey,
+    managedAgents,
+    profiles,
+    relayAgentPubkeys,
+    relayAgentsQuery.data,
+  ]);
 
   useManagedAgentObserverBridge(ingestionAgents);
   useActiveAgentTurnsBridge(ingestionAgents);

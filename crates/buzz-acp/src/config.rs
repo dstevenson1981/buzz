@@ -250,6 +250,12 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_AGENT_COMMAND", default_value = "goose")]
     pub agent_command: String,
 
+    /// Agent commands this deployment permits the owner to select remotely.
+    /// The startup command is always included. An empty value therefore allows
+    /// instruction/model edits while keeping the runtime fixed.
+    #[arg(long, env = "BUZZ_ACP_ALLOWED_RUNTIMES", value_delimiter = ',')]
+    pub allowed_runtimes: Option<Vec<String>>,
+
     #[arg(
         long,
         env = "BUZZ_ACP_AGENT_ARGS",
@@ -346,6 +352,15 @@ pub struct CliArgs {
 
     #[arg(long, env = "BUZZ_ACP_CONFIG", default_value = "./buzz-acp.toml")]
     pub config: PathBuf,
+
+    /// Persistent owner-managed overrides received over the encrypted observer
+    /// control channel.
+    #[arg(
+        long,
+        env = "BUZZ_ACP_REMOTE_CONFIG",
+        default_value = "./.buzz/remote-agent-config.json"
+    )]
+    pub remote_config: PathBuf,
 
     #[arg(long, env = "BUZZ_ACP_DEDUP", default_value = "queue", value_enum)]
     pub dedup: DedupMode,
@@ -499,6 +514,7 @@ pub struct Config {
     pub keys: Keys,
     pub relay_url: String,
     pub agent_command: String,
+    pub allowed_runtimes: Vec<String>,
     pub agent_args: Vec<String>,
     pub mcp_command: String,
     pub idle_timeout_secs: u64,
@@ -522,6 +538,7 @@ pub struct Config {
     pub channels_override: Option<Vec<String>>,
     pub no_mention_filter: bool,
     pub config_path: PathBuf,
+    pub remote_config_path: PathBuf,
     pub context_message_limit: u32,
     /// Maximum turns per session before proactive rotation. 0 = disabled.
     pub max_turns_per_session: u32,
@@ -849,7 +866,7 @@ impl Config {
             .replace_range(.., &"0".repeat(args.private_key.len()));
         args.private_key.clear();
 
-        let system_prompt = if let Some(text) = args.system_prompt {
+        let mut system_prompt = if let Some(text) = args.system_prompt {
             Some(text)
         } else if let Some(ref path) = args.system_prompt_file {
             Some(std::fs::read_to_string(path)?)
@@ -905,7 +922,28 @@ impl Config {
             }
         }
 
-        let agent_command = args.agent_command;
+        let baseline_agent_command = args.agent_command;
+        let allowed_runtimes = crate::remote_config::normalize_allowed_runtimes(
+            args.allowed_runtimes,
+            &baseline_agent_command,
+        );
+        let remote_config = match crate::remote_config::load_remote_config(
+            &args.remote_config,
+            &allowed_runtimes,
+        ) {
+            Ok(config) => config,
+            Err(error) => {
+                tracing::warn!(%error, "ignoring invalid remote agent configuration");
+                None
+            }
+        };
+        let agent_command = remote_config
+            .as_ref()
+            .map(|config| config.runtime.clone())
+            .unwrap_or(baseline_agent_command);
+        if let Some(remote) = remote_config.as_ref() {
+            system_prompt = Some(remote.system_prompt.clone());
+        }
 
         if agent_command.trim().is_empty() {
             return Err(ConfigError::ConfigFile(
@@ -1046,7 +1084,10 @@ impl Config {
         // Spawned desktop agents now carry a complete instance snapshot. Team
         // instructions arrive independently so they can be layered at runtime.
         let mut persona_env_vars = Vec::new();
-        let model = args.model;
+        let model = remote_config
+            .as_ref()
+            .map(|config| config.model.clone())
+            .unwrap_or(args.model);
 
         // Inject CODEX_CONFIG so the @agentclientprotocol/codex-acp adapter (1.x)
         // opens the Seatbelt network sandbox for buzz-cli (an MCP subprocess). No-op
@@ -1065,6 +1106,7 @@ impl Config {
             keys,
             relay_url: args.relay_url,
             agent_command,
+            allowed_runtimes,
             agent_args,
             mcp_command: args.mcp_command,
             idle_timeout_secs,
@@ -1089,6 +1131,7 @@ impl Config {
             channels_override: args.channels,
             no_mention_filter: args.no_mention_filter,
             config_path: args.config,
+            remote_config_path: args.remote_config,
             context_message_limit: args.context_message_limit,
             max_turns_per_session: args.max_turns_per_session,
             presence_enabled: !args.no_presence,
@@ -1444,6 +1487,7 @@ mod tests {
             keys: nostr::Keys::generate(),
             relay_url: "ws://localhost:3000".into(),
             agent_command: "goose".into(),
+            allowed_runtimes: vec!["goose".into()],
             agent_args: vec!["acp".into()],
             mcp_command: "".into(),
             idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
@@ -1463,6 +1507,7 @@ mod tests {
             channels_override: None,
             no_mention_filter: false,
             config_path: PathBuf::from("./buzz-acp.toml"),
+            remote_config_path: PathBuf::from("./.buzz/remote-agent-config.json"),
             context_message_limit: 12,
             max_turns_per_session: 0,
             presence_enabled: true,

@@ -107,9 +107,11 @@ type RawRelayAgent = {
   pubkey: string;
   name: string;
   agent_type: string;
+  owner_pubkey?: string | null;
   channels: string[];
   channel_ids: string[];
   capabilities: string[];
+  allowed_runtimes?: string[];
   status: RelayAgent["status"];
   respond_to?: RelayAgent["respondTo"];
   respond_to_allowlist?: string[];
@@ -685,9 +687,11 @@ function fromRawRelayAgent(agent: RawRelayAgent): RelayAgent {
     pubkey: agent.pubkey,
     name: agent.name,
     agentType: agent.agent_type,
+    ownerPubkey: agent.owner_pubkey ?? null,
     channels: agent.channels,
     channelIds: agent.channel_ids ?? [],
     capabilities: agent.capabilities,
+    allowedRuntimes: agent.allowed_runtimes ?? [],
     status: agent.status,
     respondTo: agent.respond_to ?? null,
     respondToAllowlist: agent.respond_to_allowlist ?? [],

@@ -718,6 +718,9 @@ export function injectObserverEventsForE2E(
 ) {
   for (const event of events) {
     appendAgentEvent(agentPubkey, event);
+    if (event.kind === "control_result") {
+      dispatchControlResult(agentPubkey, event.payload);
+    }
   }
   notifyListeners();
 }
