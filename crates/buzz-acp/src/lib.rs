@@ -134,6 +134,35 @@ async fn publish_agent_directory(
     Ok(())
 }
 
+async fn publish_configured_agent_directory(
+    publisher: &RelayEventPublisher,
+    keys: &nostr::Keys,
+    config: &Config,
+    subscribed_channel_ids: &HashSet<Uuid>,
+) -> Result<(), relay::RelayError> {
+    let Some(agent_name) = config.agent_name.as_deref() else {
+        return Ok(());
+    };
+
+    let respond_to_directory = config.respond_to.to_string();
+    let mut subscribed_channel_id_strings: Vec<String> = subscribed_channel_ids
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    subscribed_channel_id_strings.sort();
+
+    publish_agent_directory(
+        publisher,
+        keys,
+        agent_name,
+        &config.agent_command,
+        &respond_to_directory,
+        &subscribed_channel_id_strings,
+        config.agent_owner.as_deref(),
+    )
+    .await
+}
+
 fn emit_runtime_lifecycle(
     observer: Option<&observer::ObserverHandle>,
     start_nonce: &str,
@@ -1558,19 +1587,11 @@ async fn tokio_main() -> Result<()> {
     }
 
     if let Some(agent_name) = config.agent_name.as_deref() {
-        let respond_to_directory = config.respond_to.to_string();
-        let subscribed_channel_id_strings: Vec<String> = subscribed_channel_ids
-            .iter()
-            .map(|id| id.to_string())
-            .collect();
-        match publish_agent_directory(
+        match publish_configured_agent_directory(
             &presence_publisher,
             &presence_keys,
-            agent_name,
-            &config.agent_command,
-            &respond_to_directory,
-            &subscribed_channel_id_strings,
-            config.agent_owner.as_deref(),
+            &config,
+            &subscribed_channel_ids,
         )
         .await
         {
@@ -2025,6 +2046,7 @@ async fn tokio_main() -> Result<()> {
                                 }
                                 membership_newest_ts.insert(ch, ts);
 
+                                let mut directory_needs_refresh = false;
                                 if kind_u32 == KIND_MEMBER_ADDED_NOTIFICATION {
                                     // Clear removal tracking so sessions are not
                                     // stripped for a legitimately re-added channel.
@@ -2038,12 +2060,13 @@ async fn tokio_main() -> Result<()> {
                                             tracing::warn!("failed to subscribe to new channel {ch}: {e}");
                                         } else {
                                             subscribed_channel_ids.insert(ch);
+                                            directory_needs_refresh = true;
                                         }
                                     } else {
                                         tracing::debug!(channel_id = %ch, "membership notification: no matching rules — skipping");
                                     }
                                 } else {
-                                    subscribed_channel_ids.remove(&ch);
+                                    directory_needs_refresh = subscribed_channel_ids.remove(&ch);
                                     tracing::info!(channel_id = %ch, "membership notification: unsubscribing from channel");
                                     if let Err(e) = relay.unsubscribe_channel(ch).await {
                                         tracing::warn!("failed to unsubscribe from channel {ch}: {e}");
@@ -2084,6 +2107,30 @@ async fn tokio_main() -> Result<()> {
                                             invalidated,
                                             "cleaned up after membership removal"
                                         );
+                                    }
+                                }
+                                if directory_needs_refresh {
+                                    if let Some(agent_name) = config.agent_name.as_deref() {
+                                        match publish_configured_agent_directory(
+                                            &presence_publisher,
+                                            &presence_keys,
+                                            &config,
+                                            &subscribed_channel_ids,
+                                        )
+                                        .await
+                                        {
+                                            Ok(_) => tracing::info!(
+                                                channel_id = %ch,
+                                                agent_name = %agent_name,
+                                                channels = subscribed_channel_ids.len(),
+                                                "refreshed kind:10100 agent directory after membership change"
+                                            ),
+                                            Err(e) => tracing::warn!(
+                                                channel_id = %ch,
+                                                agent_name = %agent_name,
+                                                "failed to refresh agent directory after membership change: {e}"
+                                            ),
+                                        }
                                     }
                                 }
                                 continue;
@@ -5048,6 +5095,7 @@ mod build_mcp_servers_tests {
             keys: nostr::Keys::generate(),
             relay_url: "ws://localhost:3000".into(),
             agent_command: "goose".into(),
+            agent_name: None,
             agent_args: vec!["acp".into()],
             mcp_command: "test-mcp-server".into(),
             idle_timeout_secs: config::DEFAULT_IDLE_TIMEOUT_SECS,
@@ -5269,6 +5317,7 @@ mod error_outcome_emission_tests {
             // harmlessly off the JoinSet — irrelevant to the synchronous
             // feed emission under test.
             agent_command: "true".into(),
+            agent_name: None,
             agent_args: vec![],
             mcp_command: "test-mcp-server".into(),
             idle_timeout_secs: config::DEFAULT_IDLE_TIMEOUT_SECS,
