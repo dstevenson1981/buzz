@@ -101,11 +101,14 @@ async fn publish_agent_directory(
     keys: &nostr::Keys,
     name: &str,
     agent_command: &str,
+    respond_to: &str,
+    channel_ids: &[String],
+    owner_pubkey: Option<&str>,
 ) -> Result<(), relay::RelayError> {
     use buzz_core::kind::KIND_AGENT_PROFILE;
     use nostr::{EventBuilder, Kind};
 
-    let content = serde_json::json!({
+    let mut content_obj = serde_json::json!({
         "name": name,
         "agent_type": agent_command,
         "status": "online",
@@ -113,8 +116,16 @@ async fn publish_agent_directory(
         // fail ingest without it). "anyone" matches this deployment's flat
         // team: any member may add these agents to channels.
         "channel_add_policy": "anyone",
-    })
-    .to_string();
+        // The desktop's mention-autocomplete eligibility
+        // (relayAgentIsSharedWithUser) requires BOTH a respond_to mode and the
+        // channel list — entries without them are invisible to @-mentions.
+        "respond_to": respond_to,
+        "channel_ids": channel_ids,
+    });
+    if let Some(owner) = owner_pubkey {
+        content_obj["owner_pubkey"] = serde_json::json!(owner);
+    }
+    let content = content_obj.to_string();
     let event = EventBuilder::new(Kind::Custom(KIND_AGENT_PROFILE as u16), content)
         .tags([])
         .sign_with_keys(keys)
@@ -1547,11 +1558,19 @@ async fn tokio_main() -> Result<()> {
     }
 
     if let Some(agent_name) = config.agent_name.as_deref() {
+        let respond_to_directory = config.respond_to.to_string();
+        let subscribed_channel_id_strings: Vec<String> = subscribed_channel_ids
+            .iter()
+            .map(|id| id.to_string())
+            .collect();
         match publish_agent_directory(
             &presence_publisher,
             &presence_keys,
             agent_name,
             &config.agent_command,
+            &respond_to_directory,
+            &subscribed_channel_id_strings,
+            config.agent_owner.as_deref(),
         )
         .await
         {
