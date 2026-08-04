@@ -139,7 +139,7 @@ pub async fn get_cloud_agent_provisioning_config(
 ) -> Result<CloudAgentProvisioningConfig, String> {
     let url = format!("{}/v1/config", cloud_api_base_url(&state));
     let response = state
-        .http_client
+        .media_fetch_client
         .get(&url)
         .timeout(Duration::from_secs(15))
         .send()
@@ -184,8 +184,11 @@ pub async fn create_cloud_relay_agent(
     let authorization =
         build_nip98_auth_header_for_keys(&owner_keys, &Method::POST, &url, &body)?;
 
+    // This request contains the agent private key. The no-redirect client is
+    // mandatory so neither the payload nor its signed auth header can be
+    // forwarded to a different origin by a 3xx response.
     let response = state
-        .http_client
+        .media_fetch_client
         .post(&url)
         .header(reqwest::header::AUTHORIZATION, authorization)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
