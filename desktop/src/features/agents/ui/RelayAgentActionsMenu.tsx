@@ -1,19 +1,34 @@
-import { EllipsisVertical, Pencil } from "lucide-react";
+import {
+  CopyPlus,
+  EllipsisVertical,
+  Pencil,
+  Share2,
+  Trash2,
+} from "lucide-react";
 
 import type { RelayAgent } from "@/shared/api/types";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
 
 export function RelayAgentActionsMenu({
   agent,
+  cloudManaged,
+  onDelete,
+  onDuplicate,
   onEdit,
+  onShare,
 }: {
   agent: RelayAgent;
+  cloudManaged: boolean;
+  onDelete: (agent: RelayAgent) => void;
+  onDuplicate: (agent: RelayAgent) => void;
   onEdit: (agent: RelayAgent) => void;
+  onShare: (agent: RelayAgent) => void;
 }) {
   return (
     <DropdownMenu modal={false}>
@@ -34,6 +49,26 @@ export function RelayAgentActionsMenu({
           <Pencil className="h-4 w-4" />
           Edit
         </DropdownMenuItem>
+        {cloudManaged ? (
+          <>
+            <DropdownMenuItem onClick={() => onDuplicate(agent)}>
+              <CopyPlus className="h-4 w-4" />
+              Duplicate
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onShare(agent)}>
+              <Share2 className="h-4 w-4" />
+              Share
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive"
+              onClick={() => onDelete(agent)}
+            >
+              <Trash2 className="h-4 w-4" />
+              Delete
+            </DropdownMenuItem>
+          </>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );

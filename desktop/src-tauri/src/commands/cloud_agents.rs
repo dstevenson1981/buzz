@@ -2,14 +2,21 @@ use std::time::Duration;
 
 use nostr::Keys;
 use reqwest::Method;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::app_state::AppState;
+use crate::managed_agents::agent_snapshot::{
+    encode_snapshot_json, AgentSnapshot, AgentSnapshotDefinition, AgentSnapshotMemory,
+    AgentSnapshotProfile, MemoryLevel, FORMAT_DISCRIMINATOR, FORMAT_VERSION,
+};
 use crate::relay::{
     build_nip98_auth_header_for_keys, classify_request_error, parse_json_response,
     relay_api_base_url_with_override,
 };
+
+use super::export_util::save_bytes_with_dialog;
 
 const MAX_AGENT_NAME_CHARS: usize = 80;
 const MAX_MODEL_CHARS: usize = 256;
@@ -48,6 +55,51 @@ pub struct CreateCloudRelayAgentResponse {
     pub pubkey: String,
     pub name: String,
     pub status: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteCloudRelayAgentResponse {
+    pub pubkey: String,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudRelayAgentConfiguration {
+    pub pubkey: String,
+    pub name: String,
+    pub runtime: String,
+    pub model: Option<String>,
+    pub system_prompt: String,
+    pub allowed_runtimes: Vec<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCloudRelayAgentInput {
+    pub name: String,
+    pub runtime: String,
+    pub model: Option<String>,
+    pub system_prompt: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudAgentSnapshotInput {
+    pub name: String,
+    pub runtime: String,
+    pub model: Option<String>,
+    pub system_prompt: String,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudAgentSnapshotPayload {
+    pub file_bytes: Vec<u8>,
+    pub file_name: String,
 }
 
 fn cloud_api_base_url(state: &AppState) -> String {
@@ -114,6 +166,31 @@ fn normalize_create_input(
     })
 }
 
+fn normalize_update_input(
+    input: UpdateCloudRelayAgentInput,
+) -> Result<UpdateCloudRelayAgentInput, String> {
+    let normalized = normalize_create_input(CreateCloudRelayAgentInput {
+        name: input.name,
+        runtime: input.runtime,
+        model: input.model,
+        system_prompt: input.system_prompt,
+    })?;
+    Ok(UpdateCloudRelayAgentInput {
+        name: normalized.name,
+        runtime: normalized.runtime,
+        model: normalized.model,
+        system_prompt: normalized.system_prompt,
+    })
+}
+
+fn normalize_agent_pubkey(pubkey: &str) -> Result<String, String> {
+    let normalized = pubkey.trim().to_ascii_lowercase();
+    if normalized.len() != 64 || !normalized.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("Cloud agent public key is invalid.".to_string());
+    }
+    Ok(normalized)
+}
+
 async fn cloud_error_message(response: reqwest::Response) -> String {
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
@@ -124,13 +201,43 @@ async fn cloud_error_message(response: reqwest::Response) -> String {
     }
     match status {
         reqwest::StatusCode::NOT_FOUND => {
-            "Cloud agent creation is not configured for this community.".to_string()
+            "This relay agent is not managed by this cloud host.".to_string()
         }
         reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
-            "Your Buzz identity is not authorized to create cloud agents here.".to_string()
+            "Your Buzz identity is not authorized to manage cloud agents here.".to_string()
         }
-        _ => format!("Cloud agent creation failed (HTTP {status})."),
+        _ => format!("Cloud agent request failed (HTTP {status})."),
     }
+}
+
+async fn signed_cloud_request<T: DeserializeOwned>(
+    state: &AppState,
+    method: Method,
+    path: &str,
+    body: Vec<u8>,
+    timeout: Duration,
+) -> Result<T, String> {
+    let owner_keys = state.signing_keys()?;
+    let url = format!("{}{}", cloud_api_base_url(state), path);
+    let authorization = build_nip98_auth_header_for_keys(&owner_keys, &method, &url, &body)?;
+    let mut request = state
+        .media_fetch_client
+        .request(method, &url)
+        .header(reqwest::header::AUTHORIZATION, authorization)
+        .timeout(timeout);
+    if !body.is_empty() {
+        request = request
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|error| classify_request_error(&error))?;
+    if !response.status().is_success() {
+        return Err(cloud_error_message(response).await);
+    }
+    parse_json_response(response).await
 }
 
 #[tauri::command]
@@ -203,6 +310,126 @@ pub async fn create_cloud_relay_agent(
     parse_json_response(response).await
 }
 
+#[tauri::command]
+pub async fn get_cloud_relay_agent(
+    pubkey: String,
+    state: State<'_, AppState>,
+) -> Result<CloudRelayAgentConfiguration, String> {
+    let pubkey = normalize_agent_pubkey(&pubkey)?;
+    signed_cloud_request(
+        &state,
+        Method::GET,
+        &format!("/v1/agents/{pubkey}"),
+        Vec::new(),
+        Duration::from_secs(20),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn update_cloud_relay_agent(
+    pubkey: String,
+    input: UpdateCloudRelayAgentInput,
+    state: State<'_, AppState>,
+) -> Result<CloudRelayAgentConfiguration, String> {
+    let pubkey = normalize_agent_pubkey(&pubkey)?;
+    let input = normalize_update_input(input)?;
+    let body = serde_json::to_vec(&input)
+        .map_err(|error| format!("failed to encode cloud agent update: {error}"))?;
+    signed_cloud_request(
+        &state,
+        Method::PATCH,
+        &format!("/v1/agents/{pubkey}"),
+        body,
+        Duration::from_secs(90),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn delete_cloud_relay_agent(
+    pubkey: String,
+    state: State<'_, AppState>,
+) -> Result<DeleteCloudRelayAgentResponse, String> {
+    let pubkey = normalize_agent_pubkey(&pubkey)?;
+    signed_cloud_request(
+        &state,
+        Method::DELETE,
+        &format!("/v1/agents/{pubkey}"),
+        Vec::new(),
+        Duration::from_secs(90),
+    )
+    .await
+}
+
+fn cloud_agent_snapshot_payload(
+    input: CloudAgentSnapshotInput,
+) -> Result<CloudAgentSnapshotPayload, String> {
+    let normalized = normalize_update_input(UpdateCloudRelayAgentInput {
+        name: input.name,
+        runtime: input.runtime,
+        model: input.model,
+        system_prompt: input.system_prompt,
+    })?;
+    let snapshot = AgentSnapshot {
+        format: FORMAT_DISCRIMINATOR.to_string(),
+        version: FORMAT_VERSION,
+        definition: AgentSnapshotDefinition {
+            name: normalized.name.clone(),
+            source_is_builtin: false,
+            system_prompt: Some(normalized.system_prompt),
+            runtime: Some(normalized.runtime),
+            model: normalized.model,
+            provider: None,
+            parallelism: None,
+            respond_to: Some("anyone".to_string()),
+            respond_to_allowlist: vec![],
+            name_pool: vec![],
+            idle_timeout_seconds: None,
+            max_turn_duration_seconds: None,
+        },
+        profile: AgentSnapshotProfile {
+            display_name: normalized.name.clone(),
+            about: None,
+            avatar_data_url: None,
+            avatar_url: input.avatar_url.filter(|value| !value.trim().is_empty()),
+        },
+        memory: AgentSnapshotMemory {
+            level: MemoryLevel::None,
+            entries: vec![],
+        },
+    };
+    let file_bytes = encode_snapshot_json(&snapshot)?;
+    let slug = crate::util::slugify(&normalized.name, "agent", 50);
+    Ok(CloudAgentSnapshotPayload {
+        file_bytes,
+        file_name: format!("{slug}.agent.json"),
+    })
+}
+
+#[tauri::command]
+pub fn encode_cloud_agent_snapshot_for_send(
+    input: CloudAgentSnapshotInput,
+) -> Result<CloudAgentSnapshotPayload, String> {
+    cloud_agent_snapshot_payload(input)
+}
+
+#[tauri::command]
+pub async fn export_cloud_agent_snapshot(
+    input: CloudAgentSnapshotInput,
+    app: AppHandle,
+) -> Result<bool, String> {
+    let payload = cloud_agent_snapshot_payload(input)?;
+    save_bytes_with_dialog(
+        &app,
+        &payload.file_name,
+        "Agent snapshot",
+        &["json"],
+        &payload.file_bytes,
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,5 +461,35 @@ mod tests {
         .expect_err("blank prompt rejected");
 
         assert_eq!(error, "Agent instructions are required.");
+    }
+
+    #[test]
+    fn cloud_snapshot_is_importable_and_excludes_cloud_identity() {
+        let payload = cloud_agent_snapshot_payload(CloudAgentSnapshotInput {
+            name: "Research".into(),
+            runtime: "claude-agent-acp".into(),
+            model: Some("claude-sonnet".into()),
+            system_prompt: "Research carefully.".into(),
+            avatar_url: Some("https://example.com/avatar.png".into()),
+        })
+        .expect("snapshot");
+        let snapshot = crate::managed_agents::agent_snapshot::decode_snapshot_json(
+            &payload.file_bytes,
+        )
+        .expect("valid snapshot");
+
+        assert_eq!(snapshot.definition.name, "Research");
+        assert_eq!(snapshot.definition.runtime.as_deref(), Some("claude-agent-acp"));
+        assert_eq!(snapshot.memory.level, MemoryLevel::None);
+        let json = String::from_utf8(payload.file_bytes).expect("utf8");
+        assert!(!json.contains("privateKey"));
+        assert!(!json.contains("authTag"));
+        assert!(!json.contains("relayUrl"));
+    }
+
+    #[test]
+    fn cloud_agent_pubkey_rejects_path_injection() {
+        assert!(normalize_agent_pubkey("../agents").is_err());
+        assert!(normalize_agent_pubkey(&"a".repeat(64)).is_ok());
     }
 }

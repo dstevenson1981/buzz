@@ -10500,7 +10500,7 @@ export function maybeInstallE2eTauriMocks() {
           owner_pubkey: identity?.pubkey ?? DEFAULT_MOCK_IDENTITY.pubkey,
           channels: [],
           channel_ids: [],
-          capabilities: ["remote-config-v1"],
+          capabilities: ["remote-config-v1", "cloud-control-v1"],
           allowed_runtimes: ["claude-agent-acp", "codex-acp"],
           status: "online",
           respond_to: "anyone",
@@ -10512,6 +10512,91 @@ export function maybeInstallE2eTauriMocks() {
           status: "starting",
         };
       }
+      case "get_cloud_relay_agent": {
+        const { pubkey } = payload as { pubkey: string };
+        const agent = mockRelayAgents.find(
+          (candidate) =>
+            candidate.pubkey.toLowerCase() === pubkey.toLowerCase(),
+        );
+        if (!agent)
+          throw new Error(
+            "This relay agent is not managed by this cloud host.",
+          );
+        return {
+          pubkey: agent.pubkey,
+          name: agent.name,
+          runtime: agent.agent_type,
+          model: "claude-sonnet",
+          systemPrompt: "Build carefully and report progress in the thread.",
+          allowedRuntimes: ["claude-agent-acp", "codex-acp"],
+          status: "running",
+        };
+      }
+      case "update_cloud_relay_agent": {
+        const { pubkey, input } = payload as {
+          pubkey: string;
+          input: {
+            name: string;
+            runtime: string;
+            model?: string | null;
+            systemPrompt: string;
+          };
+        };
+        const agent = mockRelayAgents.find(
+          (candidate) =>
+            candidate.pubkey.toLowerCase() === pubkey.toLowerCase(),
+        );
+        if (!agent)
+          throw new Error(
+            "This relay agent is not managed by this cloud host.",
+          );
+        agent.name = input.name.trim();
+        agent.agent_type = input.runtime;
+        return {
+          pubkey: agent.pubkey,
+          name: agent.name,
+          runtime: input.runtime,
+          model: input.model?.trim() || null,
+          systemPrompt: input.systemPrompt,
+          allowedRuntimes: ["claude-agent-acp", "codex-acp"],
+          status: "running",
+        };
+      }
+      case "delete_cloud_relay_agent": {
+        const { pubkey } = payload as { pubkey: string };
+        const index = mockRelayAgents.findIndex(
+          (candidate) =>
+            candidate.pubkey.toLowerCase() === pubkey.toLowerCase(),
+        );
+        if (index === -1) {
+          throw new Error(
+            "This relay agent is not managed by this cloud host.",
+          );
+        }
+        mockRelayAgents.splice(index, 1);
+        return { pubkey, status: "deleted" };
+      }
+      case "encode_cloud_agent_snapshot_for_send": {
+        const { input } = payload as { input: Record<string, unknown> };
+        const fileName = `${String(input.name ?? "agent")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")}.agent.json`;
+        return {
+          fileBytes: Array.from(
+            new TextEncoder().encode(
+              JSON.stringify({
+                format: "buzz-agent-snapshot",
+                version: 1,
+                definition: input,
+                memory: { level: "none", entries: [] },
+              }),
+            ),
+          ),
+          fileName,
+        };
+      }
+      case "export_cloud_agent_snapshot":
+        return true;
       case "list_personas":
         return handleListPersonas();
       case "create_persona":

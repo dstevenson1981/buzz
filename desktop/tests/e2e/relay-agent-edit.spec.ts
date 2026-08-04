@@ -178,3 +178,72 @@ test("owner creates a cloud relay agent from the section header", async ({
     )
     .toBe(true);
 });
+
+test("owner manages a cloud relay agent from the relay card menu", async ({
+  page,
+}) => {
+  await installMockBridge(page, {
+    relayAgents: [
+      {
+        pubkey: AGENT_PUBKEY,
+        name: "Cloud Builder",
+        agentType: "claude-agent-acp",
+        ownerPubkey: OWNER_PUBKEY,
+        capabilities: ["remote-config-v1", "cloud-control-v1"],
+        allowedRuntimes: ["claude-agent-acp", "codex-acp"],
+        channelNames: ["general"],
+        respondTo: "anyone",
+      },
+    ],
+  });
+  await openAgentsView(page);
+
+  const card = page.getByTestId(`relay-agent-card-${AGENT_PUBKEY}`);
+  const openMenu = () =>
+    card.getByRole("button", { name: /Open actions for/ }).click();
+
+  await openMenu();
+  await expect(page.getByRole("menuitem", { name: "Edit" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Duplicate" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Share" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Delete" })).toBeVisible();
+
+  await page.getByRole("menuitem", { name: "Duplicate" }).click();
+  const duplicateDialog = page.getByTestId("relay-agent-create-dialog");
+  await expect(duplicateDialog).toBeVisible();
+  await expect(duplicateDialog.getByLabel("Agent name")).toHaveValue(
+    "Cloud Builder copy",
+  );
+  await expect(duplicateDialog.getByLabel("Agent instructions")).toHaveValue(
+    "Build carefully and report progress in the thread.",
+  );
+  await duplicateDialog.getByRole("button", { name: "Cancel" }).click();
+
+  await openMenu();
+  await page.getByRole("menuitem", { name: "Edit" }).click();
+  const editDialog = page.getByTestId("relay-agent-edit-dialog");
+  await expect(editDialog.getByLabel("Agent name")).toHaveValue(
+    "Cloud Builder",
+  );
+  await editDialog.getByLabel("Agent name").fill("Cloud Architect");
+  await editDialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(editDialog).toBeHidden();
+  await expect(page.getByText("Cloud Builder is up to date.")).toBeVisible();
+  await expect(
+    card.getByRole("button", { name: "Open actions for Cloud Architect" }),
+  ).toBeVisible({ timeout: 5_000 });
+
+  await openMenu();
+  await page.getByRole("menuitem", { name: "Share" }).click();
+  await expect(page.getByTestId("relay-agent-share-dialog")).toBeVisible();
+  await expect(page.getByText("Share Cloud Architect")).toBeVisible();
+  await page.getByRole("button", { name: "Close" }).click();
+
+  await openMenu();
+  await page.getByRole("menuitem", { name: "Delete" }).click();
+  const deleteDialog = page.getByTestId("relay-agent-delete-dialog");
+  await expect(deleteDialog).toBeVisible();
+  await deleteDialog.getByRole("button", { name: "Delete agent" }).click();
+  await expect(card).toBeHidden();
+  await expect(page.getByText("Cloud Architect was deleted.")).toBeVisible();
+});

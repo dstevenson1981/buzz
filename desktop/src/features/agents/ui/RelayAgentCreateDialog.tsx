@@ -4,8 +4,10 @@ import { toast } from "sonner";
 
 import {
   createCloudRelayAgent,
+  getCloudRelayAgent,
   getCloudAgentProvisioningConfig,
 } from "@/shared/api/tauriCloudAgents";
+import type { RelayAgent } from "@/shared/api/types";
 import type {
   CloudAgentProvisioningConfig,
   CreateCloudRelayAgentResponse,
@@ -26,10 +28,12 @@ import { AgentDropdownSelect } from "./agentConfigControls";
 import { relayRuntimeLabel } from "./RelayAgentEditDialog";
 
 export function RelayAgentCreateDialog({
+  agentToDuplicate,
   onCreated,
   onOpenChange,
   open,
 }: {
+  agentToDuplicate: RelayAgent | null;
   onCreated: (agent: CreateCloudRelayAgentResponse) => void;
   onOpenChange: (open: boolean) => void;
   open: boolean;
@@ -54,18 +58,30 @@ export function RelayAgentCreateDialog({
     setSystemPrompt("");
     setError(null);
     setLoading(true);
-    void getCloudAgentProvisioningConfig()
-      .then((next) => {
+    void Promise.all([
+      getCloudAgentProvisioningConfig(),
+      agentToDuplicate
+        ? getCloudRelayAgent(agentToDuplicate.pubkey)
+        : Promise.resolve(null),
+    ])
+      .then(([next, source]) => {
         if (cancelled) return;
         if (next.allowedRuntimes.length === 0) {
           throw new Error("This cloud host has no agent runtimes configured.");
         }
         setConfiguration(next);
         setRuntime(
-          next.allowedRuntimes.includes(next.defaultRuntime)
-            ? next.defaultRuntime
-            : next.allowedRuntimes[0],
+          source && next.allowedRuntimes.includes(source.runtime)
+            ? source.runtime
+            : next.allowedRuntimes.includes(next.defaultRuntime)
+              ? next.defaultRuntime
+              : next.allowedRuntimes[0],
         );
+        if (source) {
+          setName(`${source.name} copy`);
+          setModel(source.model ?? "");
+          setSystemPrompt(source.systemPrompt);
+        }
       })
       .catch((nextError) => {
         if (!cancelled) {
@@ -82,7 +98,7 @@ export function RelayAgentCreateDialog({
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [agentToDuplicate, open]);
 
   async function handleCreate() {
     if (!configuration || saving) return;
@@ -128,7 +144,11 @@ export function RelayAgentCreateDialog({
         data-testid="relay-agent-create-dialog"
       >
         <DialogHeader>
-          <DialogTitle>New cloud agent</DialogTitle>
+          <DialogTitle>
+            {agentToDuplicate
+              ? `Duplicate ${agentToDuplicate.name}`
+              : "New cloud agent"}
+          </DialogTitle>
           <DialogDescription className="sr-only">
             Configure and start a new agent on this community&apos;s cloud host.
           </DialogDescription>
@@ -224,7 +244,7 @@ export function RelayAgentCreateDialog({
             type="button"
           >
             {saving ? <LoaderCircle className="animate-spin" /> : null}
-            Create agent
+            {agentToDuplicate ? "Duplicate agent" : "Create agent"}
           </Button>
         </DialogFooter>
       </DialogContent>

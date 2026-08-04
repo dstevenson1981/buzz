@@ -6,6 +6,10 @@ import {
   getRelayAgentConfiguration,
   updateRelayAgentConfiguration,
 } from "@/features/agents/relayAgentControl";
+import {
+  getCloudRelayAgent,
+  updateCloudRelayAgent,
+} from "@/shared/api/tauriCloudAgents";
 import type { RelayAgent, RelayAgentConfiguration } from "@/shared/api/types";
 import { Alert, AlertDescription } from "@/shared/ui/alert";
 import { Button } from "@/shared/ui/button";
@@ -48,8 +52,9 @@ export function RelayAgentEditDialog({
   onSaved: () => void;
   open: boolean;
 }) {
-  const [configuration, setConfiguration] =
-    React.useState<RelayAgentConfiguration | null>(null);
+  const [configuration, setConfiguration] = React.useState<
+    (RelayAgentConfiguration & { name: string }) | null
+  >(null);
   const [error, setError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
@@ -60,7 +65,15 @@ export function RelayAgentEditDialog({
     setConfiguration(null);
     setError(null);
     setLoading(true);
-    void getRelayAgentConfiguration(agent.pubkey)
+    const cloudManaged = agent.capabilities.includes("cloud-control-v1");
+    void (
+      cloudManaged
+        ? getCloudRelayAgent(agent.pubkey)
+        : getRelayAgentConfiguration(agent.pubkey).then((next) => ({
+            ...next,
+            name: agent.name,
+          }))
+    )
       .then((next) => {
         if (!cancelled) setConfiguration(next);
       })
@@ -86,15 +99,23 @@ export function RelayAgentEditDialog({
     setError(null);
     setSaving(true);
     try {
-      const result = await updateRelayAgentConfiguration(agent.pubkey, {
-        runtime: configuration.runtime,
-        systemPrompt: configuration.systemPrompt,
-        model: configuration.model?.trim() || null,
-      });
+      const cloudManaged = agent.capabilities.includes("cloud-control-v1");
+      const result = cloudManaged
+        ? await updateCloudRelayAgent(agent.pubkey, {
+            name: configuration.name,
+            runtime: configuration.runtime,
+            systemPrompt: configuration.systemPrompt,
+            model: configuration.model?.trim() || null,
+          })
+        : await updateRelayAgentConfiguration(agent.pubkey, {
+            runtime: configuration.runtime,
+            systemPrompt: configuration.systemPrompt,
+            model: configuration.model?.trim() || null,
+          });
       onOpenChange(false);
       onSaved();
       toast.success(
-        result.restartRequired
+        "restartRequired" in result && result.restartRequired
           ? `${agent.name} saved and is restarting.`
           : `${agent.name} is up to date.`,
       );
@@ -135,6 +156,29 @@ export function RelayAgentEditDialog({
           </div>
         ) : configuration ? (
           <div className="space-y-5 py-2">
+            {agent?.capabilities.includes("cloud-control-v1") ? (
+              <div className="space-y-2">
+                <label
+                  className="text-sm font-medium"
+                  htmlFor="relay-agent-name"
+                >
+                  Agent name
+                </label>
+                <Input
+                  autoFocus
+                  id="relay-agent-name"
+                  maxLength={80}
+                  onChange={(event) =>
+                    setConfiguration((current) =>
+                      current
+                        ? { ...current, name: event.target.value }
+                        : current,
+                    )
+                  }
+                  value={configuration.name}
+                />
+              </div>
+            ) : null}
             <div className="space-y-2">
               <label
                 className="text-sm font-medium"
@@ -214,7 +258,13 @@ export function RelayAgentEditDialog({
             Cancel
           </Button>
           <Button
-            disabled={!configuration || loading || saving}
+            disabled={
+              !configuration ||
+              configuration.name.trim().length === 0 ||
+              configuration.systemPrompt.trim().length === 0 ||
+              loading ||
+              saving
+            }
             onClick={() => void handleSave()}
             type="button"
           >

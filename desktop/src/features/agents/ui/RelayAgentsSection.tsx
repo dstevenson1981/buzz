@@ -21,22 +21,29 @@ type RelayAgentsSectionProps = {
   managedPubkeys: Set<string>;
   onCreate: () => void;
   onOpenProfile: (pubkey: string) => void;
+  onDelete: (agent: RelayAgent) => void;
+  onDuplicate: (agent: RelayAgent) => void;
   onEdit: (agent: RelayAgent) => void;
+  onShare: (agent: RelayAgent) => void;
 };
 
 /**
  * Cards for agents that live outside this desktop: headless buzz-acp harnesses
  * (for example, Docker containers) that publish a kind:10100 directory entry.
- * Owners can edit hosts that advertise remote configuration support; lifecycle
- * remains controlled by the host. Clicking a card opens its profile panel.
+ * Owners can edit hosts that advertise remote configuration support. Hosts
+ * advertising cloud control also expose duplicate, share, and delete actions.
+ * Clicking a card opens its profile panel.
  */
 export function RelayAgentsSection({
   relayAgents,
   isLoading,
   managedPubkeys,
   onCreate,
+  onDelete,
+  onDuplicate,
   onOpenProfile,
   onEdit,
+  onShare,
 }: RelayAgentsSectionProps) {
   const externalAgents = relayAgents.filter(
     (agent) => !managedPubkeys.has(normalizePubkey(agent.pubkey)),
@@ -96,11 +103,20 @@ export function RelayAgentsSection({
               normalizePubkey(ownerPubkey ?? "") ===
                 normalizePubkey(currentPubkey ?? "") &&
               agent.capabilities.includes("remote-config-v1");
+            const cloudManaged =
+              agent.capabilities.includes("cloud-control-v1");
             return (
               <AgentIdentityCard
                 actions={
                   canConfigure ? (
-                    <RelayAgentActionsMenu agent={agent} onEdit={onEdit} />
+                    <RelayAgentActionsMenu
+                      agent={agent}
+                      cloudManaged={cloudManaged}
+                      onDelete={onDelete}
+                      onDuplicate={onDuplicate}
+                      onEdit={onEdit}
+                      onShare={onShare}
+                    />
                   ) : null
                 }
                 key={agent.pubkey}

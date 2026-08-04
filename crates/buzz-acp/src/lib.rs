@@ -107,10 +107,18 @@ async fn publish_agent_directory(
     owner_pubkey: Option<&str>,
     allowed_runtimes: &[String],
     remote_configuration_enabled: bool,
+    cloud_control_enabled: bool,
 ) -> Result<(), relay::RelayError> {
     use buzz_core::kind::KIND_AGENT_PROFILE;
     use nostr::{EventBuilder, Kind};
 
+    let mut capabilities = Vec::new();
+    if remote_configuration_enabled {
+        capabilities.push("remote-config-v1");
+    }
+    if cloud_control_enabled {
+        capabilities.push("cloud-control-v1");
+    }
     let mut content_obj = serde_json::json!({
         "name": name,
         "agent_type": agent_command,
@@ -124,11 +132,7 @@ async fn publish_agent_directory(
         // channel list — entries without them are invisible to @-mentions.
         "respond_to": respond_to,
         "channel_ids": channel_ids,
-        "capabilities": if remote_configuration_enabled {
-            serde_json::json!(["remote-config-v1"])
-        } else {
-            serde_json::json!([])
-        },
+        "capabilities": capabilities,
         "allowed_runtimes": allowed_runtimes,
     });
     if let Some(owner) = owner_pubkey {
@@ -170,6 +174,14 @@ async fn publish_configured_agent_directory(
         config.agent_owner.as_deref(),
         &config.allowed_runtimes,
         config.relay_observer && config.agent_owner.is_some(),
+        std::env::var("BUZZ_ACP_CLOUD_CONTROL")
+            .ok()
+            .is_some_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            }),
     )
     .await
 }

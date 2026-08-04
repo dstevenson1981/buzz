@@ -21,7 +21,9 @@ import { TeamDeleteDialog } from "./TeamDeleteDialog";
 import { TeamDialog } from "./TeamDialog";
 import { RelayAgentsSection } from "./RelayAgentsSection";
 import { RelayAgentCreateDialog } from "./RelayAgentCreateDialog";
+import { RelayAgentDeleteDialog } from "./RelayAgentDeleteDialog";
 import { RelayAgentEditDialog } from "./RelayAgentEditDialog";
+import { RelayAgentShareDialog } from "./RelayAgentShareDialog";
 import { TeamsSection } from "./TeamsSection";
 import {
   AGENT_CARD_GRID_COLUMNS_CLASS,
@@ -54,6 +56,15 @@ export function AgentsView() {
   const [isCreateDialogOpen, setIsCreateDialogOpen] = React.useState(false);
   const [relayAgentToEdit, setRelayAgentToEdit] =
     React.useState<RelayAgent | null>(null);
+  const [relayAgentToDelete, setRelayAgentToDelete] =
+    React.useState<RelayAgent | null>(null);
+  const [relayAgentToDuplicate, setRelayAgentToDuplicate] =
+    React.useState<RelayAgent | null>(null);
+  const [relayAgentToShare, setRelayAgentToShare] =
+    React.useState<RelayAgent | null>(null);
+  const [deletedRelayPubkeys, setDeletedRelayPubkeys] = React.useState(
+    () => new Set<string>(),
+  );
   const [isRelayAgentCreateOpen, setIsRelayAgentCreateOpen] =
     React.useState(false);
 
@@ -218,12 +229,23 @@ export function AgentsView() {
             />
 
             <RelayAgentsSection
-              relayAgents={agents.relayAgentsQuery.data ?? []}
+              relayAgents={(agents.relayAgentsQuery.data ?? []).filter(
+                (agent) => !deletedRelayPubkeys.has(agent.pubkey.toLowerCase()),
+              )}
               isLoading={agents.relayAgentsQuery.isLoading}
               managedPubkeys={agents.managedPubkeys}
-              onCreate={() => setIsRelayAgentCreateOpen(true)}
+              onCreate={() => {
+                setRelayAgentToDuplicate(null);
+                setIsRelayAgentCreateOpen(true);
+              }}
+              onDelete={setRelayAgentToDelete}
+              onDuplicate={(agent) => {
+                setRelayAgentToDuplicate(agent);
+                setIsRelayAgentCreateOpen(true);
+              }}
               onEdit={setRelayAgentToEdit}
               onOpenProfile={(pubkey) => openProfilePanel?.(pubkey)}
+              onShare={setRelayAgentToShare}
             />
 
             <TeamsSection
@@ -272,14 +294,45 @@ export function AgentsView() {
       />
 
       <RelayAgentCreateDialog
+        agentToDuplicate={relayAgentToDuplicate}
         onCreated={() => {
           agents.refetchRelayAgents();
           for (const delay of [1_500, 4_000, 8_000]) {
             window.setTimeout(() => agents.refetchRelayAgents(), delay);
           }
         }}
-        onOpenChange={setIsRelayAgentCreateOpen}
+        onOpenChange={(open) => {
+          setIsRelayAgentCreateOpen(open);
+          if (!open) setRelayAgentToDuplicate(null);
+        }}
         open={isRelayAgentCreateOpen}
+      />
+
+      <RelayAgentShareDialog
+        agent={relayAgentToShare}
+        onOpenChange={(open) => {
+          if (!open) setRelayAgentToShare(null);
+        }}
+        open={relayAgentToShare !== null}
+      />
+
+      <RelayAgentDeleteDialog
+        agent={relayAgentToDelete}
+        onDeleted={(pubkey) => {
+          setDeletedRelayPubkeys((current) => {
+            const next = new Set(current);
+            next.add(pubkey.toLowerCase());
+            return next;
+          });
+          agents.refetchRelayAgents();
+          for (const delay of [1_500, 4_000]) {
+            window.setTimeout(() => agents.refetchRelayAgents(), delay);
+          }
+        }}
+        onOpenChange={(open) => {
+          if (!open) setRelayAgentToDelete(null);
+        }}
+        open={relayAgentToDelete !== null}
       />
 
       {isCreateDialogOpen ? (
