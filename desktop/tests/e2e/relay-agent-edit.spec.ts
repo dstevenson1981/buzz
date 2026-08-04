@@ -139,3 +139,42 @@ test("owner edits a remotely managed relay agent", async ({ page }) => {
     page.getByText("Cloud Builder saved and is restarting."),
   ).toBeVisible();
 });
+
+test("owner creates a cloud relay agent from the section header", async ({
+  page,
+}) => {
+  await installMockBridge(page);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("open-agents-view").click();
+
+  await page.getByTestId("create-relay-agent-button").click();
+  const dialog = page.getByTestId("relay-agent-create-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("combobox", { name: "Runtime" })).toHaveText(
+    "Claude Code",
+  );
+
+  await dialog.getByLabel("Agent name").fill("Research");
+  await dialog
+    .getByLabel("Agent instructions")
+    .fill("Research the assigned market and cite primary sources.");
+  await dialog.getByLabel("Model").fill("claude-sonnet");
+  await dialog.getByRole("button", { name: "Create agent" }).click();
+
+  await expect(dialog).toBeHidden();
+  await expect(
+    page.getByText("Research is starting in the cloud."),
+  ).toBeVisible();
+  await expect(page.getByText("Research", { exact: true })).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as Window & { __BUZZ_E2E_COMMANDS__?: string[] }
+          ).__BUZZ_E2E_COMMANDS__?.includes("create_cloud_relay_agent") ??
+          false,
+      ),
+    )
+    .toBe(true);
+});

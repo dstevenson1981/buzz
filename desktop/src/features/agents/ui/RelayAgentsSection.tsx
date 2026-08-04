@@ -1,9 +1,12 @@
+import { Plus } from "lucide-react";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import type { RelayAgent } from "@/shared/api/types";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { IdentityCardSkeleton } from "@/shared/ui/identity-card-skeleton";
+import { Button } from "@/shared/ui/button";
 import { SectionHeader } from "@/shared/ui/PageHeader";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { AgentIdentityCard } from "./AgentIdentityCard";
 import { RelayAgentActionsMenu } from "./RelayAgentActionsMenu";
 import { AGENT_CARD_GRID_COLUMNS_CLASS } from "./UnifiedAgentsSection";
@@ -16,6 +19,7 @@ type RelayAgentsSectionProps = {
   isLoading: boolean;
   /** Desktop-managed pubkeys — already rendered above, so excluded here. */
   managedPubkeys: Set<string>;
+  onCreate: () => void;
   onOpenProfile: (pubkey: string) => void;
   onEdit: (agent: RelayAgent) => void;
 };
@@ -30,6 +34,7 @@ export function RelayAgentsSection({
   relayAgents,
   isLoading,
   managedPubkeys,
+  onCreate,
   onOpenProfile,
   onEdit,
 }: RelayAgentsSectionProps) {
@@ -45,14 +50,27 @@ export function RelayAgentsSection({
   const identityQuery = useIdentityQuery();
   const currentPubkey = identityQuery.data?.pubkey;
 
-  if (!isLoading && externalAgents.length === 0) {
-    return null;
-  }
-
   return (
     <section className="relative space-y-4" data-testid="agents-relay-agents">
       <div className={CARD_COLUMN_CLASS}>
         <SectionHeader
+          action={
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label="Create cloud agent"
+                  data-testid="create-relay-agent-button"
+                  onClick={onCreate}
+                  size="icon"
+                  type="button"
+                  variant="outline"
+                >
+                  <Plus aria-hidden="true" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Create cloud agent</TooltipContent>
+            </Tooltip>
+          }
           title="Relay agents"
           description="Agents connected to your community from outside this app."
         />

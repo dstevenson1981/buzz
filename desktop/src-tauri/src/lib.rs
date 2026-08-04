@@ -769,6 +769,8 @@ pub fn run() {
             get_relay_self,
             resolve_oa_owner,
             list_relay_agents,
+            get_cloud_agent_provisioning_config,
+            create_cloud_relay_agent,
             list_managed_agents,
             list_managed_agent_runtimes,
             start_managed_agent_runtime,

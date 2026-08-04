@@ -10476,6 +10476,42 @@ export function maybeInstallE2eTauriMocks() {
         );
       case "list_relay_agents":
         return handleListRelayAgents(activeConfig);
+      case "get_cloud_agent_provisioning_config":
+        return {
+          allowedRuntimes: ["claude-agent-acp", "codex-acp"],
+          defaultRuntime: "claude-agent-acp",
+        };
+      case "create_cloud_relay_agent": {
+        const { input } = payload as {
+          input: {
+            name: string;
+            runtime: string;
+            model?: string | null;
+            systemPrompt: string;
+          };
+        };
+        const pubkey = (mockRelayAgents.length + 1)
+          .toString(16)
+          .padStart(64, "0");
+        mockRelayAgents.push({
+          pubkey,
+          name: input.name.trim(),
+          agent_type: input.runtime,
+          owner_pubkey: identity?.pubkey ?? DEFAULT_MOCK_IDENTITY.pubkey,
+          channels: [],
+          channel_ids: [],
+          capabilities: ["remote-config-v1"],
+          allowed_runtimes: ["claude-agent-acp", "codex-acp"],
+          status: "online",
+          respond_to: "anyone",
+          respond_to_allowlist: [],
+        });
+        return {
+          pubkey,
+          name: input.name.trim(),
+          status: "starting",
+        };
+      }
       case "list_personas":
         return handleListPersonas();
       case "create_persona":

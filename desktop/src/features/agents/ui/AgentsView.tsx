@@ -20,6 +20,7 @@ import { SecretRevealDialog } from "./SecretRevealDialog";
 import { TeamDeleteDialog } from "./TeamDeleteDialog";
 import { TeamDialog } from "./TeamDialog";
 import { RelayAgentsSection } from "./RelayAgentsSection";
+import { RelayAgentCreateDialog } from "./RelayAgentCreateDialog";
 import { RelayAgentEditDialog } from "./RelayAgentEditDialog";
 import { TeamsSection } from "./TeamsSection";
 import {
@@ -53,6 +54,8 @@ export function AgentsView() {
   const [isCreateDialogOpen, setIsCreateDialogOpen] = React.useState(false);
   const [relayAgentToEdit, setRelayAgentToEdit] =
     React.useState<RelayAgent | null>(null);
+  const [isRelayAgentCreateOpen, setIsRelayAgentCreateOpen] =
+    React.useState(false);
 
   function openUnifiedCreate() {
     personas.prepareCreate();
@@ -218,6 +221,7 @@ export function AgentsView() {
               relayAgents={agents.relayAgentsQuery.data ?? []}
               isLoading={agents.relayAgentsQuery.isLoading}
               managedPubkeys={agents.managedPubkeys}
+              onCreate={() => setIsRelayAgentCreateOpen(true)}
               onEdit={setRelayAgentToEdit}
               onOpenProfile={(pubkey) => openProfilePanel?.(pubkey)}
             />
@@ -265,6 +269,17 @@ export function AgentsView() {
           window.setTimeout(() => agents.refetchRelayAgents(), 1_500);
         }}
         open={relayAgentToEdit !== null}
+      />
+
+      <RelayAgentCreateDialog
+        onCreated={() => {
+          agents.refetchRelayAgents();
+          for (const delay of [1_500, 4_000, 8_000]) {
+            window.setTimeout(() => agents.refetchRelayAgents(), delay);
+          }
+        }}
+        onOpenChange={setIsRelayAgentCreateOpen}
+        open={isRelayAgentCreateOpen}
       />
 
       {isCreateDialogOpen ? (
