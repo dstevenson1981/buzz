@@ -9,8 +9,7 @@ use crate::validate::{
     validate_content_size, validate_hex64, validate_uuid, MAX_DIFF_BYTES,
 };
 use buzz_sdk::mentions::{
-    extract_at_mentions_with_known, extract_nostr_uris, merge_mentions, strip_code_regions,
-    MENTION_CAP,
+    extract_at_mentions_with_known, extract_nostr_uris, strip_code_regions, MENTION_CAP,
 };
 use std::collections::HashMap;
 
@@ -120,38 +119,76 @@ async fn resolve_channel_id(client: &BuzzClient, event_id: &str) -> Result<Uuid,
     )))
 }
 
-/// Resolve `@name` mentions in `content` against this channel's members.
+fn resolve_names_to_pubkeys(
+    names: &[String],
+    name_to_pubkeys: &std::collections::HashMap<String, Vec<String>>,
+    has_explicit_mentions: bool,
+) -> Result<Vec<String>, CliError> {
+    let mut resolved = Vec::new();
+    for name in names {
+        match name_to_pubkeys
+            .get(name)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            [pubkey] => resolved.push(pubkey.clone()),
+            [] if has_explicit_mentions => {}
+            [] => {
+                return Err(CliError::Usage(format!(
+                    "mention '@{name}' does not match a current channel member; retry with --mention <pubkey>"
+                )))
+            }
+            _ if has_explicit_mentions => {}
+            candidates => {
+                return Err(CliError::Usage(format!(
+                    "mention '@{name}' is ambiguous; candidates: {}. Retry with --mention <pubkey>",
+                    candidates.join(", ")
+                )))
+            }
+        }
+    }
+    Ok(resolved)
+}
+
+/// Resolve mention text against the channel membership snapshot.
 ///
 /// Queries kind 39002 (channel members), then both kind 0 user profiles and
 /// kind 10100 relay-agent profiles. Relay agents often have their display name
 /// only in kind 10100, so resolving from kind 0 alone makes agent-to-agent
 /// mentions look right in text while missing the `p` tag needed to wake the
-/// target. On any I/O or parse failure, returns an empty vec — auto-tagging is
-/// best-effort and must never block a send.
+/// target.
+///
+/// Returns both the current member set and uniquely name-resolved pubkeys.
+/// Lookup failures are fatal when mention processing is requested: publishing
+/// visible mention text without its intended `p` tag is worse than not sending.
 async fn resolve_content_mentions(
     client: &BuzzClient,
     channel_id: &str,
     content: &str,
-) -> Vec<String> {
-    if !content.contains('@') {
-        return vec![];
+    has_explicit_mentions: bool,
+) -> Result<(Vec<String>, Vec<String>), CliError> {
+    let stripped = strip_code_regions(content);
+    if !stripped.contains('@') && !has_explicit_mentions {
+        return Ok((vec![], vec![]));
     }
 
-    // 1. Membership list (kind 39002 is parameterized-replaceable, addressed by `d` tag).
     let members_filter = serde_json::json!({
         "kinds": [39002],
         "#d": [channel_id],
         "limit": 1,
     });
-    let member_pubkeys = match fetch_member_pubkeys(client, &members_filter).await {
-        Some(pks) if !pks.is_empty() => pks,
-        _ => return vec![],
-    };
+    let member_pubkeys = fetch_member_pubkeys(client, &members_filter)
+        .await
+        .ok_or_else(|| {
+            CliError::Other("could not load channel membership for mention preflight".into())
+        })?;
+
+    if !stripped.contains('@') {
+        return Ok((member_pubkeys, vec![]));
+    }
 
     let member_count = member_pubkeys.len();
 
-    // 2. Profiles for those members (kind 0 for humans/managed agents,
-    //    kind 10100 for relay-agent directory entries).
     let profile_authors = member_pubkeys.clone();
     let profiles_filter = serde_json::json!({
         "kinds": [0],
@@ -160,17 +197,21 @@ async fn resolve_content_mentions(
     });
     let profile_events = fetch_events(client, &profiles_filter)
         .await
-        .unwrap_or_default();
+        .ok_or_else(|| {
+            CliError::Other("could not load member profiles for mention resolution".into())
+        })?;
+
     let agent_profiles_filter = serde_json::json!({
         "kinds": [10100],
-        "authors": member_pubkeys,
+        "authors": member_pubkeys.clone(),
         "limit": member_count,
     });
     let agent_profile_events = fetch_events(client, &agent_profiles_filter)
         .await
-        .unwrap_or_default();
+        .ok_or_else(|| {
+            CliError::Other("could not load relay agent profiles for mention resolution".into())
+        })?;
 
-    // 3. Single parse: extract (pubkey, display_name) pairs from profile JSON.
     let mut name_to_pubkeys: HashMap<String, Vec<String>> = HashMap::new();
     let mut display_names: Vec<String> = Vec::new();
     for e in &profile_events {
@@ -196,14 +237,58 @@ async fn resolve_content_mentions(
         }
     }
 
-    // 4. Two-pass extraction: known multi-word names first, single-word fallback.
-    let known_refs: Vec<&str> = display_names.iter().map(|s| s.as_str()).collect();
-    let names = extract_at_mentions_with_known(content, &known_refs);
+    let known_refs: Vec<&str> = display_names.iter().map(String::as_str).collect();
+    let names = extract_at_mentions_with_known(&stripped, &known_refs);
+    let resolved = resolve_names_to_pubkeys(&names, &name_to_pubkeys, has_explicit_mentions)?;
+    Ok((member_pubkeys, resolved))
+}
 
-    // 5. Look up matched names → pubkeys via the map we already built.
-    names
+fn normalize_explicit_mentions(values: &[String]) -> Result<Vec<String>, CliError> {
+    let mut normalized = Vec::new();
+    for value in values {
+        let pubkey = PublicKey::parse(value.trim())
+            .map_err(|_| CliError::Usage(format!("invalid --mention pubkey: {value}")))?;
+        let hex = pubkey.to_hex();
+        if !normalized.contains(&hex) {
+            normalized.push(hex);
+        }
+    }
+    if normalized.len() > MENTION_CAP {
+        return Err(CliError::Usage(format!(
+            "too many --mention values (max {MENTION_CAP})"
+        )));
+    }
+    Ok(normalized)
+}
+
+fn merge_message_mentions(
+    explicit: &[String],
+    uri_pubkeys: &[String],
+    auto_resolved: &[String],
+) -> Result<Vec<String>, CliError> {
+    let mut mentions = Vec::new();
+    for pubkey in explicit
         .iter()
-        .flat_map(|n| name_to_pubkeys.get(n).into_iter().flatten())
+        .chain(uri_pubkeys.iter())
+        .chain(auto_resolved.iter())
+    {
+        if !mentions.contains(pubkey) {
+            mentions.push(pubkey.clone());
+        }
+    }
+    if mentions.len() > MENTION_CAP {
+        return Err(CliError::Usage(format!(
+            "too many unique message mentions (max {MENTION_CAP})"
+        )));
+    }
+    Ok(mentions)
+}
+
+fn missing_members(mentions: &[String], members: &[String]) -> Vec<String> {
+    let members: std::collections::HashSet<&str> = members.iter().map(String::as_str).collect();
+    mentions
+        .iter()
+        .filter(|pk| !members.contains(pk.as_str()))
         .cloned()
         .collect()
 }
@@ -241,6 +326,19 @@ fn display_name_from_agent_profile(content_json: &str) -> Option<String> {
         .and_then(|n| n.as_str())
         .filter(|n| !n.trim().is_empty())
         .map(str::to_string)
+}
+
+fn event_mention_pubkeys(event: &nostr::Event) -> Vec<String> {
+    event
+        .tags
+        .iter()
+        .filter_map(|tag| {
+            let parts = tag.as_slice();
+            (parts.first().map(String::as_str) == Some("p"))
+                .then(|| parts.get(1).cloned())
+                .flatten()
+        })
+        .collect()
 }
 
 /// Fetch raw events for `filter` via the relay's `/query` endpoint.
@@ -523,6 +621,7 @@ pub struct SendMessageParams {
     pub reply_to: Option<String>,
     pub broadcast: bool,
     pub files: Vec<String>,
+    pub mentions: Vec<String>,
 }
 
 pub async fn cmd_send_message(
@@ -539,6 +638,30 @@ pub async fn cmd_send_message(
         validate_hex64(r)?;
     }
     let channel_uuid = parse_uuid(&p.channel_id)?;
+
+    let explicit_mentions = normalize_explicit_mentions(&p.mentions)?;
+    let stripped = strip_code_regions(&p.content);
+    let uri_pubkeys = extract_nostr_uris(&stripped);
+    // Supplying any identity explicitly authorizes unresolved or ambiguous @Name text
+    // as presentation-only, matching Desktop's separate visible-label and p-tag model.
+    // Uniquely resolvable member names still add their own p-tags; callers must supply
+    // every intended identity whose visible label cannot be resolved uniquely.
+    let has_explicit_mentions = !explicit_mentions.is_empty() || !uri_pubkeys.is_empty();
+    let (member_pubkeys, auto_resolved) =
+        resolve_content_mentions(client, &p.channel_id, &p.content, has_explicit_mentions).await?;
+    let mention_pubkeys = merge_message_mentions(&explicit_mentions, &uri_pubkeys, &auto_resolved)?;
+
+    let missing = missing_members(&mention_pubkeys, &member_pubkeys);
+    if !missing.is_empty() {
+        return Err(CliError::Usage(
+            serde_json::json!({
+                "message": "mentioned pubkeys are not channel members; add them explicitly before retrying",
+                "missing_member_pubkeys": missing,
+                "add_member_command": format!("buzz channels add-member --channel {} --pubkey <pubkey> --role <member|bot>", p.channel_id),
+            })
+            .to_string(),
+        ));
+    }
 
     // Upload files and build imeta tags
     let mut media_tags: Vec<Vec<String>> = Vec::new();
@@ -571,16 +694,7 @@ pub async fn cmd_send_message(
         None
     };
 
-    // Resolve @name mentions in the author-written body only — not the media markdown we
-    // append above, which is derived from upload metadata and can't carry `@names`.
-    let mut auto_resolved = resolve_content_mentions(client, &p.channel_id, &p.content).await;
-
-    // NIP-27: also extract nostr:npub1… inline references (skipping code regions)
-    let stripped = strip_code_regions(&p.content);
-    let uri_pubkeys = extract_nostr_uris(&stripped);
-    merge_mentions(&mut auto_resolved, &uri_pubkeys, MENTION_CAP);
-
-    let mention_refs: Vec<&str> = auto_resolved.iter().map(|s| s.as_str()).collect();
+    let mention_refs: Vec<&str> = mention_pubkeys.iter().map(String::as_str).collect();
 
     let builder = match p.kind {
         Some(45001) => {
@@ -617,9 +731,17 @@ pub async fn cmd_send_message(
     };
 
     let event = client.sign_event(builder)?;
-
+    let emitted_mentions = event_mention_pubkeys(&event);
     let resp = client.submit_event(event).await?;
-    println!("{}", normalize_write_response(&resp));
+    let mut output: serde_json::Value = serde_json::from_str(&normalize_write_response(&resp))
+        .unwrap_or_else(|_| serde_json::json!({ "response": resp }));
+    if let Some(object) = output.as_object_mut() {
+        object.insert(
+            "mention_pubkeys".into(),
+            serde_json::json!(emitted_mentions),
+        );
+    }
+    println!("{output}");
     Ok(())
 }
 
@@ -810,6 +932,7 @@ pub async fn dispatch(
             reply_to,
             broadcast,
             files,
+            mentions,
         } => {
             cmd_send_message(
                 client,
@@ -820,6 +943,7 @@ pub async fn dispatch(
                     reply_to,
                     broadcast,
                     files,
+                    mentions,
                 },
             )
             .await
@@ -923,7 +1047,9 @@ pub async fn dispatch(
 mod tests {
     use super::{
         add_mention_name, display_name_from_agent_profile, display_name_from_profile,
-        find_root_from_tags, match_profiles_by_name, parse_member_pubkeys,
+        event_mention_pubkeys, find_root_from_tags, match_profiles_by_name, merge_message_mentions,
+        missing_members, normalize_explicit_mentions, parse_member_pubkeys,
+        resolve_names_to_pubkeys,
     };
     use buzz_sdk::mentions::{
         extract_at_mentions_with_known, extract_at_names, match_names_to_profiles, MentionProfile,
@@ -1193,6 +1319,94 @@ mod tests {
             ],
         });
         assert_eq!(parse_member_pubkeys(&event), vec![PK_VALID_A, PK_VALID_A]);
+    }
+
+    #[test]
+    fn explicit_mentions_accept_hex_and_npub_and_deduplicate() {
+        use nostr::ToBech32;
+        let npub = nostr::PublicKey::from_hex(PK_VALID_A)
+            .unwrap()
+            .to_bech32()
+            .unwrap();
+        assert_eq!(
+            normalize_explicit_mentions(&[PK_VALID_A.into(), npub]).unwrap(),
+            vec![PK_VALID_A]
+        );
+        assert!(normalize_explicit_mentions(&["not-a-key".into()]).is_err());
+    }
+
+    #[test]
+    fn explicit_mentions_authorize_presentation_text_without_name_resolution() {
+        let names = vec!["renamed user".into()];
+        let profiles = std::collections::HashMap::new();
+        assert_eq!(
+            resolve_names_to_pubkeys(&names, &profiles, true).unwrap(),
+            Vec::<String>::new()
+        );
+        assert!(resolve_names_to_pubkeys(&names, &profiles, false).is_err());
+    }
+
+    #[test]
+    fn explicit_mentions_authorize_ambiguous_presentation_text() {
+        let names = vec!["alice".into()];
+        let profiles = std::collections::HashMap::from([(
+            "alice".into(),
+            vec![PK_VALID_A.into(), PK_VALID_B.into()],
+        )]);
+        assert_eq!(
+            resolve_names_to_pubkeys(&names, &profiles, true).unwrap(),
+            Vec::<String>::new()
+        );
+        let error = resolve_names_to_pubkeys(&names, &profiles, false).unwrap_err();
+        assert!(error.to_string().contains(PK_VALID_A));
+        assert!(error.to_string().contains(PK_VALID_B));
+    }
+
+    #[test]
+    fn explicit_mentions_make_all_at_names_presentation_only() {
+        let names = vec!["alice".into(), "bob".into()];
+        let profiles = std::collections::HashMap::from([("alice".into(), vec![PK_VALID_A.into()])]);
+        assert_eq!(
+            resolve_names_to_pubkeys(&names, &profiles, true).unwrap(),
+            vec![PK_VALID_A]
+        );
+        assert!(resolve_names_to_pubkeys(&names, &profiles, false).is_err());
+    }
+
+    #[test]
+    fn combined_mention_union_errors_instead_of_truncating() {
+        let explicit: Vec<String> = (0..50).map(|i| format!("explicit-{i}")).collect();
+        assert!(merge_message_mentions(&explicit, &[], &["resolved-bob".into()]).is_err());
+
+        let mut with_duplicate = explicit.clone();
+        with_duplicate.push(explicit[0].clone());
+        assert_eq!(
+            merge_message_mentions(&with_duplicate, &[explicit[1].clone()], &[])
+                .unwrap()
+                .len(),
+            50
+        );
+    }
+
+    #[test]
+    fn membership_preflight_lists_only_missing_mentions() {
+        assert_eq!(
+            missing_members(
+                &[PK_VALID_A.into(), PK_VALID_B.into()],
+                &[PK_VALID_A.into()]
+            ),
+            vec![PK_VALID_B]
+        );
+    }
+
+    #[test]
+    fn mention_evidence_comes_from_signed_event_tags() {
+        use nostr::{EventBuilder, Keys, Tag};
+        let event = EventBuilder::text_note("hello")
+            .tags(vec![Tag::parse(["p", PK_VALID_A]).unwrap()])
+            .sign_with_keys(&Keys::generate())
+            .unwrap();
+        assert_eq!(event_mention_pubkeys(&event), vec![PK_VALID_A]);
     }
 
     // ---- match_profiles_by_name (author resolution for `messages search --author`) ----
