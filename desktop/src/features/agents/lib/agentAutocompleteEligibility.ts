@@ -84,8 +84,9 @@ export function shouldHideAgentFromMentions({
   const normalized = normalizePubkey(pubkey);
   // Invocable => always show.
   if (mentionableAgentPubkeys.has(normalized)) return false;
-  // Non-member, non-invocable => hide (preserves prior behavior).
-  if (!isMember) return true;
+  // Relay-directory agents can be selected before channel membership; the send
+  // flow will add them as bots before sending the mention.
+  if (!isMember) return !directoryAgentPubkeys.has(normalized);
   // Member (Option B): hide only when we have an explicit not-invocable
   // signal — a relay directory (kind:10100) entry that excludes us.
   // Unknown invocability (not in directory) => show.

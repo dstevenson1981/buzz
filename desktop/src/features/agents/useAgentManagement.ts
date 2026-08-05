@@ -26,7 +26,10 @@ import { useCreatedAgentChannelAttachment } from "./useCreatedAgentChannelAttach
 import { classifyAgentManagementOrigin } from "./agentManagementBuffer";
 import { useChannelsQuery } from "@/features/channels/hooks";
 import { resolveManagedAgentAvatarUrl } from "./ui/managedAgentAvatar";
-import type { AgentCreateIntent } from "./ui/agentCreateIntent";
+import {
+  resolveChannelCreateIntent,
+  type AgentCreateIntent,
+} from "./ui/agentCreateIntent";
 import { editPersonaDialogState } from "./ui/personaDialogState";
 import type {
   CreatePersonaInput,
@@ -204,7 +207,7 @@ export function useAgentManagement() {
         avatarUrl,
       });
 
-      if (intent === "definition_start") {
+      if (resolveChannelCreateIntent(intent, true) === "definition_start") {
         const created = await createAgentMutation.mutateAsync(
           await buildInstanceInputForDefinition(
             persona,

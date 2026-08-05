@@ -220,7 +220,14 @@ export function useMentions(
     }
     return lookup;
   }, [managedAgentsQuery.data, personasQuery.data]);
-  const knownAgentPubkeys = mentionableAgentPubkeys;
+  const knownAgentPubkeys = React.useMemo(
+    () =>
+      new Set([
+        ...Array.from(mentionableAgentPubkeys),
+        ...Array.from(directoryAgentPubkeys),
+      ]),
+    [directoryAgentPubkeys, mentionableAgentPubkeys],
+  );
   const activePersonas = React.useMemo(
     () => (personasQuery.data ?? []).filter((persona) => persona.isActive),
     [personasQuery.data],

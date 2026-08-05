@@ -213,6 +213,19 @@ test("shouldHideAgentFromMentions: hides non-member non-invocable agents", () =>
   );
 });
 
+test("shouldHideAgentFromMentions: shows non-member relay-directory agents for invite-on-send", () => {
+  assert.equal(
+    shouldHideAgentFromMentions({
+      isAgent: true,
+      isMember: false,
+      pubkey: PUB_A,
+      mentionableAgentPubkeys: new Set(),
+      directoryAgentPubkeys: new Set([PUB_A]),
+    }),
+    false,
+  );
+});
+
 test("shouldHideAgentFromMentions: hides member agents with an explicit not-invocable directory entry (Fizz)", () => {
   assert.equal(
     shouldHideAgentFromMentions({

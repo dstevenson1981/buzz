@@ -18,3 +18,16 @@ export function resolveCreateIntent(
 ): AgentCreateIntent {
   return intent ?? "definition_start";
 }
+
+/**
+ * Creating from inside a channel means the user is trying to talk to the agent
+ * there. Force quick-start semantics so the instance can be attached and
+ * mentioned immediately, even if an older caller sends a definition-only
+ * intent.
+ */
+export function resolveChannelCreateIntent(
+  intent: AgentCreateIntent | undefined,
+  hasTargetChannel: boolean,
+): AgentCreateIntent {
+  return hasTargetChannel ? "definition_start" : resolveCreateIntent(intent);
+}

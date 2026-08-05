@@ -55,7 +55,7 @@ import {
   type PersonaDialogState,
 } from "./personaDialogState";
 import {
-  resolveCreateIntent,
+  resolveChannelCreateIntent,
   type AgentCreateIntent,
 } from "./agentCreateIntent";
 import { resolveManagedAgentAvatarUrl } from "./managedAgentAvatar";
@@ -216,11 +216,15 @@ export function usePersonaActions() {
           return false;
         }
 
-        // Stale-intent guard: a definition-only create never carries one.
+        const createIntent = resolveChannelCreateIntent(
+          intent,
+          Boolean(targetChannel?.id),
+        );
+        // Channel-originated creates must become mentionable immediately, so
+        // they force quick-start semantics even if a stale caller passes a
+        // definition-only intent.
         const startIntent =
-          resolveCreateIntent(intent) === "definition_start"
-            ? (backendIntent ?? null)
-            : null;
+          createIntent === "definition_start" ? (backendIntent ?? null) : null;
 
         const avatarUrl = await resolveManagedAgentAvatarUrl(
           input.avatarUrl,
@@ -232,7 +236,7 @@ export function usePersonaActions() {
           avatarUrl,
         });
 
-        if (resolveCreateIntent(intent) === "definition") {
+        if (createIntent === "definition") {
           setPersonaNoticeMessage(`Created ${persona.displayName}.`);
           setPersonaDialogState(null);
           return true;
