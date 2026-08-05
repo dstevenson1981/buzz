@@ -12,6 +12,7 @@ use buzz_sdk::mentions::{
     extract_at_mentions_with_known, extract_nostr_uris, merge_mentions, strip_code_regions,
     MENTION_CAP,
 };
+use std::collections::HashMap;
 
 /// Extract the thread root event ID from a Nostr tag array.
 ///
@@ -121,10 +122,12 @@ async fn resolve_channel_id(client: &BuzzClient, event_id: &str) -> Result<Uuid,
 
 /// Resolve `@name` mentions in `content` against this channel's members.
 ///
-/// Queries kind 39002 (channel members) then kind 0 (profiles), parses
-/// display names once, and feeds them to [`extract_at_mentions_with_known`]
-/// for multi-word matching. On any I/O or parse failure, returns an empty
-/// vec — auto-tagging is best-effort and must never block a send.
+/// Queries kind 39002 (channel members), then both kind 0 user profiles and
+/// kind 10100 relay-agent profiles. Relay agents often have their display name
+/// only in kind 10100, so resolving from kind 0 alone makes agent-to-agent
+/// mentions look right in text while missing the `p` tag needed to wake the
+/// target. On any I/O or parse failure, returns an empty vec — auto-tagging is
+/// best-effort and must never block a send.
 async fn resolve_content_mentions(
     client: &BuzzClient,
     channel_id: &str,
@@ -145,20 +148,30 @@ async fn resolve_content_mentions(
         _ => return vec![],
     };
 
-    // 2. Profiles for those members (kind 0).
+    let member_count = member_pubkeys.len();
+
+    // 2. Profiles for those members (kind 0 for humans/managed agents,
+    //    kind 10100 for relay-agent directory entries).
+    let profile_authors = member_pubkeys.clone();
     let profiles_filter = serde_json::json!({
         "kinds": [0],
-        "authors": member_pubkeys,
-        "limit": member_pubkeys.len(),
+        "authors": profile_authors,
+        "limit": member_count,
     });
-    let profile_events = match fetch_events(client, &profiles_filter).await {
-        Some(v) => v,
-        None => return vec![],
-    };
+    let profile_events = fetch_events(client, &profiles_filter)
+        .await
+        .unwrap_or_default();
+    let agent_profiles_filter = serde_json::json!({
+        "kinds": [10100],
+        "authors": member_pubkeys,
+        "limit": member_count,
+    });
+    let agent_profile_events = fetch_events(client, &agent_profiles_filter)
+        .await
+        .unwrap_or_default();
 
     // 3. Single parse: extract (pubkey, display_name) pairs from profile JSON.
-    let mut name_to_pubkeys: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
+    let mut name_to_pubkeys: HashMap<String, Vec<String>> = HashMap::new();
     let mut display_names: Vec<String> = Vec::new();
     for e in &profile_events {
         let Some(pubkey) = e.get("pubkey").and_then(|v| v.as_str()) else {
@@ -167,23 +180,20 @@ async fn resolve_content_mentions(
         let Some(content_json) = e.get("content").and_then(|v| v.as_str()) else {
             continue;
         };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(content_json) else {
+        if let Some(name) = display_name_from_profile(content_json) {
+            add_mention_name(&mut name_to_pubkeys, &mut display_names, pubkey, &name);
+        }
+    }
+    for e in &agent_profile_events {
+        let Some(pubkey) = e.get("pubkey").and_then(|v| v.as_str()) else {
             continue;
         };
-        let Some(name) = v
-            .get("display_name")
-            .or_else(|| v.get("name"))
-            .and_then(|n| n.as_str())
-            .filter(|n| !n.is_empty())
-        else {
+        let Some(content_json) = e.get("content").and_then(|v| v.as_str()) else {
             continue;
         };
-        let lower = name.to_ascii_lowercase();
-        name_to_pubkeys
-            .entry(lower)
-            .or_default()
-            .push(pubkey.to_string());
-        display_names.push(name.to_string());
+        if let Some(name) = display_name_from_agent_profile(content_json) {
+            add_mention_name(&mut name_to_pubkeys, &mut display_names, pubkey, &name);
+        }
     }
 
     // 4. Two-pass extraction: known multi-word names first, single-word fallback.
@@ -196,6 +206,41 @@ async fn resolve_content_mentions(
         .flat_map(|n| name_to_pubkeys.get(n).into_iter().flatten())
         .cloned()
         .collect()
+}
+
+fn add_mention_name(
+    name_to_pubkeys: &mut HashMap<String, Vec<String>>,
+    display_names: &mut Vec<String>,
+    pubkey: &str,
+    name: &str,
+) {
+    let name = name.trim();
+    if name.is_empty() {
+        return;
+    }
+    name_to_pubkeys
+        .entry(name.to_ascii_lowercase())
+        .or_default()
+        .push(pubkey.to_string());
+    display_names.push(name.to_string());
+}
+
+fn display_name_from_profile(content_json: &str) -> Option<String> {
+    let v = serde_json::from_str::<serde_json::Value>(content_json).ok()?;
+    v.get("display_name")
+        .or_else(|| v.get("name"))
+        .and_then(|n| n.as_str())
+        .filter(|n| !n.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn display_name_from_agent_profile(content_json: &str) -> Option<String> {
+    let v = serde_json::from_str::<serde_json::Value>(content_json).ok()?;
+    v.get("name")
+        .or_else(|| v.get("display_name"))
+        .and_then(|n| n.as_str())
+        .filter(|n| !n.trim().is_empty())
+        .map(str::to_string)
 }
 
 /// Fetch raw events for `filter` via the relay's `/query` endpoint.
@@ -876,7 +921,10 @@ pub async fn dispatch(
 
 #[cfg(test)]
 mod tests {
-    use super::{find_root_from_tags, match_profiles_by_name, parse_member_pubkeys};
+    use super::{
+        add_mention_name, display_name_from_agent_profile, display_name_from_profile,
+        find_root_from_tags, match_profiles_by_name, parse_member_pubkeys,
+    };
     use buzz_sdk::mentions::{
         extract_at_mentions_with_known, extract_at_names, match_names_to_profiles, MentionProfile,
     };
@@ -1047,6 +1095,50 @@ mod tests {
         let known_refs: Vec<&str> = display_names.iter().map(|s| s.as_str()).collect();
         let names = extract_at_mentions_with_known("hey @Will Pfleger and @alice!", &known_refs);
         assert_eq!(names, vec!["will pfleger", "alice"]);
+
+        let resolved: Vec<String> = names
+            .iter()
+            .flat_map(|n| name_to_pubkeys.get(n).into_iter().flatten())
+            .cloned()
+            .collect();
+        assert_eq!(resolved, vec![PK_VALID_A, PK_VALID_B]);
+    }
+
+    #[test]
+    fn cli_pipeline_resolves_relay_agent_directory_names() {
+        let profile_events: Vec<serde_json::Value> = vec![json!({
+            "pubkey": PK_VALID_B,
+            "content": r#"{"display_name":"Amir"}"#,
+        })];
+        let agent_profile_events: Vec<serde_json::Value> = vec![json!({
+            "pubkey": PK_VALID_A,
+            "content": r#"{"name":"Documentation","agent_type":"claude-agent-acp"}"#,
+        })];
+
+        let mut name_to_pubkeys: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        let mut display_names: Vec<String> = Vec::new();
+        for e in &profile_events {
+            let pubkey = e.get("pubkey").unwrap().as_str().unwrap();
+            let content_json = e.get("content").unwrap().as_str().unwrap();
+            if let Some(name) = display_name_from_profile(content_json) {
+                add_mention_name(&mut name_to_pubkeys, &mut display_names, pubkey, &name);
+            }
+        }
+        for e in &agent_profile_events {
+            let pubkey = e.get("pubkey").unwrap().as_str().unwrap();
+            let content_json = e.get("content").unwrap().as_str().unwrap();
+            if let Some(name) = display_name_from_agent_profile(content_json) {
+                add_mention_name(&mut name_to_pubkeys, &mut display_names, pubkey, &name);
+            }
+        }
+
+        let known_refs: Vec<&str> = display_names.iter().map(|s| s.as_str()).collect();
+        let names = extract_at_mentions_with_known(
+            "@Documentation please coordinate with @Amir",
+            &known_refs,
+        );
+        assert_eq!(names, vec!["documentation", "amir"]);
 
         let resolved: Vec<String> = names
             .iter()
