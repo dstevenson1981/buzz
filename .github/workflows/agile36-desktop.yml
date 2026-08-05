@@ -13,13 +13,10 @@ jobs:
     timeout-minutes: 90
     env:
       TARGET: aarch64-apple-darwin
-      # The relay binds each request to a community by Host header, and this
-      # deployment's community is seeded as "127.0.0.1:3000". The app's built-in
-      # default is "ws://localhost:3000", which is the same machine but a
-      # different tenant key — every HTTP query (agent directory, mesh status,
-      # message context) 404s with "no community is configured for this host".
-      # Bake the canonical authority in so ws:// and http:// agree.
-      BUZZ_DESKTOP_BUILD_RELAY_URL: ws://127.0.0.1:3000
+      # Agile36 agents and relay runtime live on the VPS; the desktop app should
+      # be a thin client pointed at that cloud relay by default.
+      BUZZ_RELAY_URL: wss://buzz.agile36.com
+      BUZZ_RELAY_HTTP: https://buzz.agile36.com
     steps:
       - uses: actions/checkout@v4
 
